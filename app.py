@@ -308,8 +308,8 @@ def build_model():
     client_2.init_steps()
     client_2.init_steps_rels()
     
-    employee_1 = BuildEmployee('employee_id_1', 'employee_email_1', 'neo4j')
-    employee_2 = BuildEmployee('employee_id_2', 'employee_email_2', 'neo4j')
+    employee_1 = BuildEmployee('employee_id_1', 'employee_email_1', 'Citi')
+    employee_2 = BuildEmployee('employee_id_2', 'employee_email_2', 'Citi')
     
     employee_1.init_rels()
     employee_2.init_rels()
@@ -326,13 +326,13 @@ def build_model():
     customer_access_1.update_step_access('company_id_1', 4)
     customer_access_2.update_step_access('company_id_2', 2)
 
-    crm = CrmDatabase('salesforce', 'cloud')
+    crm = CrmDatabase('Salesforce', 'cloud')
     crm.build()
 
-    erp = ErpDatabase('SAP', 'oracle1')
+    erp = ErpDatabase('SAP', 'Oracle1')
     erp.build()
 
-    compliance = ComplianceDatabase('actimize', 'sqlserver1')
+    compliance = ComplianceDatabase('Actimize', 'SqlServer1')
     compliance.build()
 
     app_access_1 = EmployeeAppAccess('Crm', 'employee_id_1')
