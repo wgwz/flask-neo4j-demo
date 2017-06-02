@@ -1,2 +1,2 @@
-NEO4J_dbms_connector_bolt=7688
-NEO4J_dbms_connector_http=7475
+NEO4J_dbms_connector_http_listen__address=0.0.0.0:7475
+NEO4J_dbms_connector_bolt_listen__address=0.0.0.0:7688

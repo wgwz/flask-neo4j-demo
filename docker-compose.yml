@@ -16,9 +16,10 @@ services:
     image: neo4j:latest
     env_file:
       - '.env'
+      - '.testenv'
     ports:
-      - '7475:7474'
-      - '7688:7687'
+      - '7475:7475'
+      - '7688:7688'
     volumes:
       - 'testdb:/data'
         
