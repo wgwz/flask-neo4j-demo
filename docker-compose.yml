@@ -2,18 +2,31 @@ version: '3'
 
 services:
 
-  neo4j:
+  db:
     image: neo4j:latest
     env_file:
       - '.env'
     ports:
       - '7474:7474'
       - '7687:7687'
+    volumes:
+      - 'db:/data'
+
+  testdb:
+    image: neo4j:latest
+    env_file:
+      - '.env'
+    ports:
+      - '7475:7474'
+      - '7688:7687'
+    volumes:
+      - 'testdb:/data'
         
   web:
     build: '.'
     depends_on:
-      - 'neo4j'
+      - 'db'
+      - 'testdb'
     env_file:
       - '.env'
     ports: 
@@ -21,7 +34,9 @@ services:
     volumes:
       - '.:/app'
     links:
-      - 'neo4j:neo4j'
+      - 'db:db'
+      - 'testdb:testdb'
 
 volumes:
-  neo4j: {}
+  db:
+  testdb:

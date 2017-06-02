@@ -1,2 +1,4 @@
 flask==0.12.1
 git+https://github.com/wgwz/flask-py2neo.git@0.1-alpha#egg=flask-py2neo
+Flask-Bootstrap==3.3.7.1
+pytest==3.1.1

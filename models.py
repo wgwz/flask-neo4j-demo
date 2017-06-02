@@ -1,11 +1,4 @@
-from flask import Flask, jsonify
-from flask_py2neo import Py2Neo
-
-app = Flask(__name__)
-app.config.update({
-  'PY2NEO_HOST': 'neo4j'    
-})
-db = Py2Neo(app)
+from extensions import db
 
 
 class Client(db.Model):
@@ -32,26 +25,65 @@ class Client(db.Model):
 class Onboard(db.Model):
 
     completed = db.Property()
-    has_step = db.RelatedTo('Step')
+    valid_onboard = db.Property()
+
+    has_completed = db.RelatedTo('GenericStep')
+    must_follow = db.RelatedTo('GenericProcess')
 
     @staticmethod
     def create():
         onboard = Onboard()
         onboard.completed = False
+        onboard.valid_onboard = False
         db.graph.create(onboard)
         return onboard
 
 
-class Step(db.Model):
+class BuildClient(object):
 
+    def __init__(self, company_id, company_name):
+        self.client = Client.create(company_id, company_name)
+        self.onboard = Onboard.create()
+
+    def init_rels(self):
+        self.client.has_onboard.add(self.onboard)
+        db.graph.push(self.client)
+        return 'initial client steps structure built'
+
+
+class GenericProcess(db.Model):
+
+    has_step = db.RelatedTo('GenericStep')
+    first_step = db.RelatedTo('GenericStep')
+    last_step = db.RelatedTo('GenericStep')
+    next = db.RelatedTo('GenericStep')
+
+    @staticmethod
+    def create():
+        generic = GenericProcess()
+        db.graph.create(generic)
+        return generic
+
+    @staticmethod
+    def get_steps():
+        return db.graph.run((
+          "MATCH (:GenericProcess)-[:NEXT*]->(s) "
+          "RETURN s ORDER BY s.step_number"
+        ))
+
+
+class GenericStep(db.Model):
+    
     task_name = db.Property()
     step_number = db.Property()
     duration = db.Property()
-    completed = db.Property()
+
+    next = db.RelatedTo('GenericStep')
+    depends_on = db.RelatedTo('GenericStep')
 
     @staticmethod
     def create(task_name, step_number, step_duration):
-        step = Step()
+        step = GenericStep()
         step.task_name = task_name
         step.step_number = step_number
         step.duration = step_duration
@@ -60,32 +92,106 @@ class Step(db.Model):
         return step
 
 
-class BuildClient(object):
+class BuildGeneric(object):
 
-    def __init__(self, company_id, company_name):
-        self.client = Client.create(company_id, company_name)
-        self.onboard = Onboard.create()
+    def __init__(self):
+        self.generic = GenericProcess.create()
         self.steps = []
-        self.tasks = [
-            {'task_name': 'get signed contracts', 'duration': 3}, 
-            {'task_name': 'get compliance documents', 'duration': 4},
-            {'task_name': 'compliance review', 'duration': 3},
-            {'task_name': 'countersign contracts', 'duration': 5},
-            {'task_name': 'account activation', 'duration': 3},
-        ]
+        self.tasks = [{
+            'task_name': 'get signed contracts', 
+            'duration': 3
+        }, {
+            'task_name': 'get compliance documents', 
+            'duration': 4
+        }, {
+            'task_name': 'compliance review', 
+            'duration': 3,
+        }, {
+            'task_name': 'countersign contracts', 
+            'duration': 5,
+            'depends_on': [0, 1, 2]
+        }, {
+            'task_name': 'account activation', 
+            'duration': 3,
+            'depends_on': [3]
+        }]
 
     def init_steps(self):
         for step_number, task in enumerate(self.tasks):
-            self.steps.append(Step.create(task['task_name'], step_number, task['duration']))
+            self.steps.append(GenericStep.create(
+                task['task_name'], step_number, task['duration'])
+            )
         return self.steps
 
     def init_steps_rels(self):
-        self.client.has_onboard.add(self.onboard)
-        for each_step in self.steps:
-            self.onboard.has_step.add(each_step)
-        db.graph.push(self.client)
+        
+        prior_step = None
+        i = 0
+        
+        for each_step, task in zip(self.steps, self.tasks):
+            
+            if prior_step:
+        
+                prior_step.next.add(each_step)
+                db.graph.push(prior_step)
+
+            if i == 0:
+                self.generic.first_step.add(each_step)
+                self.generic.next.add(each_step)
+            
+            if i == len(self.steps)-1:
+                self.generic.last_step.add(each_step)
+            
+            self.generic.has_step.add(each_step)
+            
+            i += 1
+
+            if task.get('depends_on') is not None:
+                for each_depend in task['depends_on']:
+                    each_step.depends_on.add(self.steps[each_depend])
+                    db.graph.push(each_step)
+            
+            prior_step = each_step
+
+        db.graph.push(self.generic)
+        return 'generic process structure built'
+    
+
+class BuildClientOnboard(object):
+
+    def __init__(self, company_id):
+        self.onboard = list(Client.select(db.graph).where(
+            company_id=company_id
+        ).first().has_onboard)[0]
+        self.generic = GenericProcess.select(db.graph).first()
+
+    def init_rels(self):
+        self.onboard.must_follow.add(self.generic)
         db.graph.push(self.onboard)
-        return 'initial client steps structure built'
+        return "structure built"
+
+
+class UpdateClientOnboard(object):
+
+    def __init__(self, company_id):
+        self.onboard = list(Client.select(db.graph).where(
+            company_id=company_id
+        ).first().has_onboard)[0]
+
+    def can_step_be_completed(self, step_number):
+        step = GenericStep.select(db.graph).where(
+            step_number=step_number
+        ).first()
+        steps_dependencies = list(step.depends_on)
+        return steps_dependencies
+
+    def mark_step_complete(self, step_number):
+        step = GenericStep.select(db.graph).where(
+            step_number=step_number
+        ).first()
+        self.onboard.has_completed.add(step)
+        db.graph.push(self.onboard)
+        return "marked step %d as complete" % step_number
 
 
 class Company(db.Model):
@@ -100,6 +206,7 @@ class Company(db.Model):
         company.name = company_name
         db.graph.push(company)
         return company
+
 
 class Employee(db.Model):
 
@@ -128,6 +235,7 @@ class Employee(db.Model):
         db.graph.create(employee)
         return employee
 
+
 class BuildEmployee(object):
     
     def __init__(self, employee_id, employee_email, company_name):
@@ -139,17 +247,19 @@ class BuildEmployee(object):
         db.graph.push(self.employee)
         return 'initial employee structure built'
 
+
 class Project(db.Model):
 
-    involved_in = db.RelatedTo('Onboard')
+    for_onboard = db.RelatedTo('Onboard')
     for_client = db.RelatedTo('Client')
-    accessed_step = db.RelatedTo('Step')
+    accessed_step = db.RelatedTo('GenericStep')
 
     @staticmethod
     def create():
         project = Project()
         db.graph.create(project)
         return project
+
 
 class EmployeeInvolvement(object):
 
@@ -165,11 +275,12 @@ class EmployeeInvolvement(object):
 
     def init_rels(self):
         self.employee.worked_on.add(self.project)
-        self.project.involved_in.add(self.onboard)
+        self.project.for_onboard.add(self.onboard)
         self.project.for_client.add(self.client)
         db.graph.push(self.employee)
         db.graph.push(self.project)
         return 'added employee involvement'
+
 
 class EmployeeAccess(object):
 
@@ -180,7 +291,7 @@ class EmployeeAccess(object):
         return db.graph.run(
             "MATCH (e:Employee)-[:WORKED_ON]->(p:Project)-[:FOR_CLIENT]->(c:Client) " +
             "WHERE e.id='%s' AND c.company_id='%s' " % (self.employee_id, client_id) +
-            "MATCH (c)-[:HAS_ONBOARD]->()-[:HAS_STEP]->(s) " + 
+          "MATCH (c)-[:HAS_ONBOARD]->()-[:MUST_FOLLOW]->()-[:HAS_STEP]->(s) " + 
             "WHERE s.step_number=%s " % str(step_number) +
             "MERGE (p)-[:ACCESSED_STEP]->(s) " +
             "RETURN e"
@@ -253,6 +364,7 @@ class CrmDatabase(object):
         db.graph.push(self.database)
         return 'structure built'
 
+
 class ErpDatabase(object):
    
     def __init__(self, app_name, database_type):
@@ -264,6 +376,7 @@ class ErpDatabase(object):
         db.graph.push(self.erp_app)
         db.graph.push(self.database)
         return 'structure built'
+
 
 class ComplianceDatabase(object):
    
@@ -301,13 +414,21 @@ class EmployeeAppAccess(object):
 def build_model():
     
     client_1 = BuildClient('company_id_1', 'company_name_1')
-    client_1.init_steps()
-    client_1.init_steps_rels()
+    client_1.init_rels()
     
     client_2 = BuildClient('company_id_2', 'company_name_2')
-    client_2.init_steps()
-    client_2.init_steps_rels()
+    client_2.init_rels()
+   
+    generic = BuildGeneric()
+    generic.init_steps()
+    generic.init_steps_rels()
+
+    cli_1_onboard = BuildClientOnboard('company_id_1')
+    cli_1_onboard.init_rels()
     
+    cli_2_onboard = BuildClientOnboard('company_id_2')
+    cli_2_onboard.init_rels()
+
     employee_1 = BuildEmployee('employee_id_1', 'employee_email_1', 'Citi')
     employee_2 = BuildEmployee('employee_id_2', 'employee_email_2', 'Citi')
     
@@ -345,13 +466,3 @@ def build_model():
     app_access_3.build()
 
     return 'model built'
-
-
-@app.route('/build')
-def build():
-    
-    db.graph.run("MATCH (n) DETACH DELETE n")
-    
-    m = build_model()
-
-    return jsonify({'status': m})
