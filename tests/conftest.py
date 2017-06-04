@@ -6,12 +6,12 @@ def app():
     _app = create_app({
         'SERVER_NAME': 'testingapplication',
         'TESTING': True,
-        'PY2NEO_HOST': 'neo4jtest',
+        'PY2NEO_HOST': 'testdb',
         'PY2NEO_HTTP_PORT': 7475,
         'PY2NEO_BOLT_PORT': 7688
     })
     with _app.app_context():
-        yield app
+        yield _app
 
 @pytest.fixture(scope='session')
 def client(app):
