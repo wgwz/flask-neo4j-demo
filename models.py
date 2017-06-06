@@ -2,7 +2,7 @@ from extensions import db
 
 
 class Client(db.Model):
-
+    '''define the client node'''
     __primarykey__ = 'company_id'
 
     person = db.Label()
@@ -23,7 +23,7 @@ class Client(db.Model):
 
 
 class Onboard(db.Model):
-
+    '''define the onboard node'''
     completed = db.Property()
     valid_onboard = db.Property()
 
@@ -40,7 +40,7 @@ class Onboard(db.Model):
 
 
 class BuildClient(object):
-
+    '''build the structure/relationships around the client node'''
     def __init__(self, company_id, company_name):
         self.client = Client.create(company_id, company_name)
         self.onboard = Onboard.create()

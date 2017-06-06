@@ -5,7 +5,7 @@ from extensions import db as _db
 
 from models import Client, Onboard, BuildClient
 from models import GenericProcess, GenericStep, BuildGeneric
-from models import BuildClientOnboard
+from models import BuildClientOnboard, UpdateClientOnboard
 
 
 class TestClient(object):
@@ -281,3 +281,49 @@ class TestBuildClientOnboard(object):
         assert process is not None
 
         assert cursor.forward() == 0
+
+
+class TestUpdateClientOnboard(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.COMPANY_ID = 'some-id-for-company'
+        cls.COMPANY_NAME = 'some-comp-name'
+
+        cls.client = BuildClient(cls.COMPANY_ID, cls.COMPANY_NAME)
+        cls.client.init_rels()
+        
+        cls.generic = BuildGeneric()
+        cls.generic.init_steps()
+        cls.generic.init_steps_rels()
+        
+        cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
+        cls.client_onboard.init_rels()
+
+        cls.STEPS_COMPLETED = [0, 2]
+        cls.update_onboard = UpdateClientOnboard(cls.COMPANY_ID)
+
+        for step in cls.STEPS_COMPLETED:
+            cls.update_onboard.mark_step_complete(step)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
+            "detach delete c, o, p, s"
+        ))
+
+    def test_mark_step_complete(self, db):
+
+        cursor = db.graph.run((
+            "match ()-[r:HAS_COMPLETED]->() "
+            "return r"
+        ))
+        
+        assert cursor.forward() == 1
+        assert 'HAS_COMPLETED' in cursor.current()['r'].types() 
+        assert cursor.forward() == 1
+        assert 'HAS_COMPLETED' in cursor.current()['r'].types()
+        assert cursor.forward() == 0
+
