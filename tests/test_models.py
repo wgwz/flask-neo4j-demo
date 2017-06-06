@@ -1,7 +1,7 @@
 # db used in class level teardown
 # bc using the db-fixture there did not seem to work
 # https://docs.pytest.org/en/latest/xunit_setup.html#class-level-setup-teardown
-from extensions import db 
+from extensions import db as _db
 
 from models import Client, Onboard, BuildClient
 from models import GenericProcess, GenericStep, BuildGeneric
@@ -158,7 +158,7 @@ class TestBuildGeneric(object):
 
     @classmethod
     def teardown_class(cls):
-        db.graph.run((
+        _db.graph.run((
             "match (p:GenericProcess)-[:NEXT*]->(s) "
             "detach delete s, p"
         ))
@@ -259,10 +259,25 @@ class TestBuildClientOnboard(object):
 
     @classmethod
     def teardown_class(cls):
-        db.graph.run((
+        _db.graph.run((
             "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
             "detach delete c, o, p, s"
         ))
 
-    def test_basic(self):
-        assert False
+    def test_must_follow_rel(self, db):
+
+        cursor = db.graph.run((
+            "match (c:Client)-[:HAS_ONBOARD]->()-[:MUST_FOLLOW]->(p) "
+            "where c.company_id='%s' "
+            "return c, p" % self.COMPANY_ID
+        ))
+
+        assert cursor.forward() == 1
+        
+        client = cursor.current()['c']
+        process = cursor.current().get('p')
+
+        assert client['company_id'] == self.COMPANY_ID
+        assert process is not None
+
+        assert cursor.forward() == 0
