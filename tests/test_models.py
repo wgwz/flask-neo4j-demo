@@ -5,6 +5,7 @@ from extensions import db
 
 from models import Client, Onboard, BuildClient
 from models import GenericProcess, GenericStep, BuildGeneric
+from models import BuildClientOnboard
 
 
 class TestClient(object):
@@ -236,3 +237,32 @@ class TestBuildGeneric(object):
             results[result['s']['step_number']].add(result['d']['step_number'])
 
         assert results == self.DEPENDENCIES
+
+
+class TestBuildClientOnboard(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.COMPANY_ID = 'some-id-for-company'
+        cls.COMPANY_NAME = 'some-comp-name'
+
+        cls.client = BuildClient(cls.COMPANY_ID, cls.COMPANY_NAME)
+        cls.client.init_rels()
+        
+        cls.generic = BuildGeneric()
+        cls.generic.init_steps()
+        cls.generic.init_steps_rels()
+        
+        cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
+        cls.client_onboard.init_rels()
+
+    @classmethod
+    def teardown_class(cls):
+        db.graph.run((
+            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
+            "detach delete c, o, p, s"
+        ))
+
+    def test_basic(self):
+        assert False

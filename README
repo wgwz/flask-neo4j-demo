@@ -1,0 +1,66 @@
+Using this project:
+==================
+
+- Install docker and docker-compose
+- Then run:
+   
+  docker-compose up --build
+
+What will that ^ do?
+===================
+
+- Launch two instances of Neo4J
+  
+  + one for dev purposes and one for testing
+
+- Launch the flask builtin server
+  
+  + which will serve the endpoints, templates, etc.
+  + but for production you'll want to go to
+    nginx proxy serving gunicorn 
+  + or setup a gunicorn worker and deploy on heroku
+
+Project Structure:
+=================
+
+--> models.py:
+    ---------
+    definition of nodes and relationships
+    that comprise the model
+
+--> factory.py: 
+    ----------
+    the flask app factory pattern
+
+--> extensions.py:
+    ------------- 
+    all flask extensions used get initialized here
+
+--> views.py:
+    --------
+    the endpoints for the API/server
+
+--> _cliapp.py:
+    ---------- 
+    the entrypoint to the flask app instance 
+    for this project
+
+Running the tests:
+=================
+
+  docker-compose exec web pytest
+
+Other hints:
+===========
+
+  Try these in a new terminal:
+  (After running docker-compose up --build)
+
+    - docker-compose exec web sh
+    - docker-compose exec web python 
+
+  - Dockerfile and docker-compose.yml is 
+    where the magic happens
+
+Reference to learn more on docker:
+https://diveintodocker.com/courses/dive-into-docker
