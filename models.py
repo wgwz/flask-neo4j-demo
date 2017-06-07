@@ -172,7 +172,7 @@ class BuildClientOnboard(object):
 
 
 class UpdateClientOnboard(object):
-
+    # TODO: finish can step be completed AKA have dependencies be met
     def __init__(self, company_id):
         self.onboard = list(Client.select(db.graph).where(
             company_id=company_id

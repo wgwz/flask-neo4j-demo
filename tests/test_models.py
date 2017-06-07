@@ -301,7 +301,8 @@ class TestUpdateClientOnboard(object):
         cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
         cls.client_onboard.init_rels()
 
-        cls.STEPS_COMPLETED = [0, 2]
+        cls.REL_TYPE = 'HAS_COMPLETED'
+        cls.STEPS_COMPLETED = [0, 4]
         cls.update_onboard = UpdateClientOnboard(cls.COMPANY_ID)
 
         for step in cls.STEPS_COMPLETED:
@@ -317,13 +318,17 @@ class TestUpdateClientOnboard(object):
     def test_mark_step_complete(self, db):
 
         cursor = db.graph.run((
-            "match ()-[r:HAS_COMPLETED]->() "
-            "return r"
+            "match ()-[r:HAS_COMPLETED]->(s) "
+            "return r, s order by s.step_number"
         ))
-        
+
         assert cursor.forward() == 1
-        assert 'HAS_COMPLETED' in cursor.current()['r'].types() 
+        assert self.REL_TYPE in cursor.current()['r'].types()
+        assert cursor.current()['s']['step_number'] == self.STEPS_COMPLETED[0]
+
         assert cursor.forward() == 1
-        assert 'HAS_COMPLETED' in cursor.current()['r'].types()
+        assert self.REL_TYPE in cursor.current()['r'].types()
+        assert cursor.current()['s']['step_number'] == self.STEPS_COMPLETED[1]
+
         assert cursor.forward() == 0
 
