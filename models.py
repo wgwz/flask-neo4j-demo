@@ -227,19 +227,19 @@ class Employee(db.Model):
     has_access_to = db.RelatedTo('Application')
 
     @staticmethod
-    def create(employee_id, employee_email):
+    def push(employee_id, employee_email):
         employee = Employee()
         employee.person = True
         employee.id = employee_id
         employee.email = employee_email
-        db.graph.create(employee)
+        db.graph.push(employee)
         return employee
 
 
 class BuildEmployee(object):
     
     def __init__(self, employee_id, employee_email, company_name):
-        self.employee = Employee.create(employee_id, employee_email)
+        self.employee = Employee.push(employee_id, employee_email)
         self.company = Company.push(company_name)
 
     def init_rels(self):
@@ -291,7 +291,7 @@ class EmployeeAccess(object):
         return db.graph.run(
             "MATCH (e:Employee)-[:WORKED_ON]->(p:Project)-[:FOR_CLIENT]->(c:Client) " +
             "WHERE e.id='%s' AND c.company_id='%s' " % (self.employee_id, client_id) +
-          "MATCH (c)-[:HAS_ONBOARD]->()-[:MUST_FOLLOW]->()-[:HAS_STEP]->(s) " + 
+            "MATCH (c)-[:HAS_ONBOARD]->()-[:MUST_FOLLOW]->()-[:HAS_STEP]->(s) " + 
             "WHERE s.step_number=%s " % str(step_number) +
             "MERGE (p)-[:ACCESSED_STEP]->(s) " +
             "RETURN e"

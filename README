@@ -6,19 +6,19 @@ Using this project:
    
   docker-compose up --build
 
+
 What will that ^ do?
 ===================
 
-- Launch two instances of Neo4J
+--> Launch two instances of Neo4J
   
-  + one for dev purposes and one for testing
+    + one for development and one for testing
 
-- Launch the flask builtin server
+--> Launch the flask builtin server
   
-  + which will serve the endpoints, templates, etc.
-  + but for production you'll want to go to
-    nginx proxy serving gunicorn 
-  + or setup a gunicorn worker and deploy on heroku
+    + which will serve the endpoints, templates, etc.
+    + for production, i.e. setup a gunicorn worker and deploy on heroku
+
 
 Project Structure:
 =================
@@ -45,10 +45,12 @@ Project Structure:
     the entrypoint to the flask app instance 
     for this project
 
+
 Running the tests:
 =================
 
   docker-compose exec web pytest
+
 
 Other hints:
 ===========
@@ -62,5 +64,9 @@ Other hints:
   - Dockerfile and docker-compose.yml is 
     where the magic happens
 
-Reference to learn more on docker:
-https://diveintodocker.com/courses/dive-into-docker
+
+References:
+==========
+
+- To learn more on Docker: https://diveintodocker.com/courses/dive-into-docker
+- py2neo docs: http://py2neo.org/v3/index.html

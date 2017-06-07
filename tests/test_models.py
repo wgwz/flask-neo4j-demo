@@ -1,11 +1,21 @@
-# db used in class level teardown
+# tests are written with reads via cypher
+# the primary reason for this is that
+# in production direct cypher queries are likely to be faster
+
+from py2neo.types import Node
+
+# _db used in class level teardown
 # bc using the db-fixture there did not seem to work
 # https://docs.pytest.org/en/latest/xunit_setup.html#class-level-setup-teardown
 from extensions import db as _db
 
+# broken into multiple lines to try to organize similar logic
+# for the future this could be modularized further
 from models import Client, Onboard, BuildClient
 from models import GenericProcess, GenericStep, BuildGeneric
 from models import BuildClientOnboard, UpdateClientOnboard
+from models import Company, Employee, BuildEmployee
+from models import Project, EmployeeInvolvement, EmployeeAccess
 
 
 class TestClient(object):
@@ -332,3 +342,235 @@ class TestUpdateClientOnboard(object):
 
         assert cursor.forward() == 0
 
+
+class TestCompanyNode(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.NAME = 'a-company-like-citi-bank'
+
+        cls.company = Company()
+        cls.company.push(cls.NAME)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (c:Company) "
+            "delete c"
+        ))
+
+    def test_company_node(self, db):
+
+        cursor = db.graph.run((
+            "match (c:Company) "
+            "return c"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['c']['name'] == self.NAME
+        assert cursor.forward() == 0
+
+
+class TestEmployeeNode(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.ID = '1122452335'
+        cls.EMAIL = 'gpwn@fuzz.org'
+        cls.LABELS = {'Employee', 'Person'}
+
+        cls.employee = Employee()
+        cls.employee.push(cls.ID, cls.EMAIL)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (e:Employee) "
+            "delete e"
+        ))
+
+    def test_employee_node(self, db):
+
+        cursor = db.graph.run((
+            "match (e:Employee) "
+            "return e"
+        ))
+
+        assert cursor.forward() == 1
+        assert set(cursor.current()['e'].labels()) == self.LABELS
+        assert cursor.current()['e']['id'] == self.ID
+        assert cursor.current()['e']['email'] == self.EMAIL
+        assert cursor.forward() == 0
+
+
+class TestBuildEmployee(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.COMPANY_NAME = 'a-company-like-citi-bank'
+        cls.EMPLOYEE_ID = '1122452335'
+        cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
+
+        cls.build_employee = BuildEmployee(
+            cls.EMPLOYEE_ID, 
+            cls.EMPLOYEE_EMAIL, 
+            cls.COMPANY_NAME
+        )
+        cls.build_employee.init_rels()
+
+        cls.REL_TYPE = 'WORKS_FOR'
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (c:Company), (e:Employee) "
+            "detach delete e, c"
+        ))
+
+    def test_build_employee(self, db):
+
+        cursor = db.graph.run((
+            "match (e:Employee)-[r:WORKS_FOR]->(c) "
+            "return e, r, c"
+        ))
+
+        assert cursor.forward() == 1
+        assert self.REL_TYPE in cursor.current()['r'].types()
+        assert cursor.current()['e']['id'] == self.EMPLOYEE_ID
+        assert cursor.current()['c']['name'] == self.COMPANY_NAME
+        assert cursor.forward() == 0
+
+
+class TestProjectNode(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.LABELS = {'Project'}
+        cls.project = Project()
+        cls.project.create()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (p:Project) "
+            "delete p"
+        ))
+
+    def test_project_node(self, db):
+
+        cursor = db.graph.run((
+            "match (p:Project) "
+            "return p"
+        ))
+
+        assert cursor.forward() == 1
+        assert set(cursor.current()['p'].labels()) == self.LABELS
+        assert cursor.forward() == 0
+
+
+class TestEmployeeInvolvement(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.CLIENT_ID = 'somecliid'
+        cls.CLIENT_NAME = 'some-client-name-aka-company-name'
+
+        cls.build_client = BuildClient(cls.CLIENT_ID, cls.CLIENT_NAME)
+        cls.build_client.init_rels()
+
+        cls.COMPANY_NAME = 'a-company-like-citi-bank'
+        cls.EMPLOYEE_ID = '1122452335'
+        cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
+
+        cls.build_employee = BuildEmployee(
+            cls.EMPLOYEE_ID, 
+            cls.EMPLOYEE_EMAIL, 
+            cls.COMPANY_NAME
+        )
+        cls.build_employee.init_rels()
+
+        cls.employee_involve = EmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
+        cls.employee_involve.init_rels()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (co:Company), (e:Employee), (cl:Client), (p:Project), (o:Onboard) "
+            "detach delete co, e, cl, p, o"
+        ))
+
+    def test_employee_involvement(self, db):
+
+        cursor = db.graph.run((
+            "match (e:Employee)-[:WORKED_ON]->(p), (c)<-[:FOR_CLIENT]-(p)-[:FOR_ONBOARD]->(o) "
+            "return p, c, o"
+        ))
+
+        assert cursor.forward() == 1
+        assert isinstance(cursor.current().get('p'), Node)
+        assert isinstance(cursor.current().get('c'), Node)
+        assert isinstance(cursor.current().get('o'), Node)
+        assert cursor.forward() == 0
+
+
+class TestEmployeeAccess(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.CLIENT_ID = 'somecliid'
+        cls.CLIENT_NAME = 'some-client-name-aka-company-name'
+
+        cls.build_client = BuildClient(cls.CLIENT_ID, cls.CLIENT_NAME)
+        cls.build_client.init_rels()
+
+        cls.build_generic = BuildGeneric()
+        cls.build_generic.init_steps()
+        cls.build_generic.init_steps_rels()
+
+        cls.build_cli_onboard = BuildClientOnboard(cls.CLIENT_ID)
+        cls.build_cli_onboard.init_rels()
+
+        cls.COMPANY_NAME = 'a-company-like-citi-bank'
+        cls.EMPLOYEE_ID = '1122452335'
+        cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
+
+        cls.build_employee = BuildEmployee(
+            cls.EMPLOYEE_ID, 
+            cls.EMPLOYEE_EMAIL, 
+            cls.COMPANY_NAME
+        )
+        cls.build_employee.init_rels()
+
+        cls.employee_involve = EmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
+        cls.employee_involve.init_rels()
+
+        cls.STEP_ACCESSED = 2
+
+        cls.employee_access = EmployeeAccess(cls.EMPLOYEE_ID)
+        cls.employee_access.update_step_access(cls.CLIENT_ID, cls.STEP_ACCESSED)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (co:Company), (e:Employee), (cl:Client), (p:Project), (o:Onboard) , (g:GenericProcess), (s:GenericStep)"
+            "detach delete co, e, cl, p, o, g, s"
+        ))
+
+    def test_employee_access(self, db):
+
+        cursor = db.graph.run((
+            "match (e:Employee)-[:WORKED_ON]->(p)-[:FOR_CLIENT]->(c) "
+            "match (p)-[:ACCESSED_STEP]->(s) "
+            "where c.company_id='%s' "
+            "return s" % self.CLIENT_ID
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['s']['step_number'] == self.STEP_ACCESSED
+        assert cursor.forward() == 0
