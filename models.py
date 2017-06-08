@@ -394,6 +394,7 @@ class ComplianceDatabase(object):
 class EmployeeAppAccess(object):
 
     def __init__(self, app_label, employee_id):
+        '''app label means node label for application node'''
         self.app_label = app_label
         self.employee_id = employee_id
 

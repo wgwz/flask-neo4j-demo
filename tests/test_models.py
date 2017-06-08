@@ -16,6 +16,9 @@ from models import GenericProcess, GenericStep, BuildGeneric
 from models import BuildClientOnboard, UpdateClientOnboard
 from models import Company, Employee, BuildEmployee
 from models import Project, EmployeeInvolvement, EmployeeAccess
+from models import Application, Database
+from models import CrmDatabase, ErpDatabase, ComplianceDatabase
+from models import EmployeeAppAccess
 
 
 class TestClient(object):
@@ -573,4 +576,236 @@ class TestEmployeeAccess(object):
 
         assert cursor.forward() == 1
         assert cursor.current()['s']['step_number'] == self.STEP_ACCESSED
+        assert cursor.forward() == 0
+
+
+class TestApplicationNode(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.APP_1 = 'test-crm-app'
+        cls.APP_2 = 'test-erp-app'
+        cls.APP_3 = 'test-compliance-app'
+
+        cls.app_1 = Application.push_crm(cls.APP_1)
+        cls.app_2 = Application.push_erp(cls.APP_2)
+        cls.app_3 = Application.push_compliance(cls.APP_3)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Application)"
+            "delete a"
+        ))
+
+    def test_application_nodes(self, db):
+
+        cursor = db.graph.run((
+            "match (a:Application) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_1
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_2
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_3
+        assert cursor.forward() == 0
+
+    def test_crm_label(self, db):
+
+        cursor = db.graph.run((
+            "match (a:Crm) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_1
+        assert cursor.forward() == 0
+
+    def test_cloud_label(self, db):
+
+        cursor = db.graph.run((
+            "match (a:Cloud) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_1
+        assert cursor.forward() == 0
+
+    def test_erp_label(self, db):
+
+        cursor = db.graph.run((
+            "match (a:Erp) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_2
+        assert cursor.forward() == 0
+
+    def test_compliance_label(self, db):
+
+        cursor = db.graph.run((
+            "match (a:Compliance) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a']['name'] == self.APP_3
+        assert cursor.forward() == 0
+
+
+class TestDatabaseNode(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.TYPE = 'sql'
+        cls.database = Database.push(cls.TYPE)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (d:Database)"
+            "delete d"
+        ))
+
+    def test_database_node(self, db):
+
+        cursor = db.graph.run((
+            "match (d:Database) "
+            "return d"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['d']['type'] == self.TYPE
+        assert cursor.forward() == 0
+
+
+class TestCrmDatabase(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.APP_NAME = 'some crm app'
+        cls.TYPE = 'sql'
+        cls.crm_db = CrmDatabase(cls.APP_NAME, cls.TYPE)
+        cls.crm_db.build()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Application), (d:Database) "
+            "detach delete a, d"
+        ))
+
+    def test_crm_database_structure(self, db):
+
+        cursor = db.graph.run((
+            "match (:Application)-[:USES_DATABASE]->(db) "
+            "return db"
+        ))
+
+        assert cursor.forward() == 1
+        assert isinstance(cursor.current()['db'], Node)
+        assert cursor.current()['db']['type'] == self.TYPE
+        assert cursor.forward() == 0
+
+
+class TestErpDatabase(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.APP_NAME = 'some erp app'
+        cls.TYPE = 'graphdb'
+        cls.erp_db = ErpDatabase(cls.APP_NAME, cls.TYPE)
+        cls.erp_db.build()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Application), (d:Database) "
+            "detach delete a, d"
+        ))
+
+    def test_erp_database_structure(self, db):
+
+        cursor = db.graph.run((
+            "match (:Application)-[:USES_DATABASE]->(db) "
+            "return db"
+        ))
+
+        assert cursor.forward() == 1
+        assert isinstance(cursor.current()['db'], Node)
+        assert cursor.current()['db']['type'] == self.TYPE
+        assert cursor.forward() == 0
+
+
+class TestComplianceDatabase(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.APP_NAME = 'some compliance app'
+        cls.TYPE = 'mysql'
+        cls.compliance_db = ComplianceDatabase(cls.APP_NAME, cls.TYPE)
+        cls.compliance_db.build()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Application), (d:Database) "
+            "detach delete a, d"
+        ))
+
+    def test_compliance_database_structure(self, db):
+
+        cursor = db.graph.run((
+            "match (:Application)-[:USES_DATABASE]->(db) "
+            "return db"
+        ))
+
+        assert cursor.forward() == 1
+        assert isinstance(cursor.current()['db'], Node)
+        assert cursor.current()['db']['type'] == self.TYPE
+        assert cursor.forward() == 0
+
+
+class TestEmployeeAppAccess(object):
+
+    @classmethod
+    def setup_class(cls):
+
+        cls.ID = '1122452335'
+        cls.EMAIL = 'gpwn@fuzz.org'
+        cls.employee = Employee()
+        cls.employee.push(cls.ID, cls.EMAIL)
+
+        cls.APP_1 = 'test-crm-app'
+        cls.app_1 = Application.push_crm(cls.APP_1)
+
+        cls.employee_app_access = EmployeeAppAccess('Crm', cls.ID)
+        cls.employee_app_access.build()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (n) "
+            "detach delete n"
+        ))
+
+    def test_compliance_database_structure(self, db):
+
+        cursor = db.graph.run((
+            "match (:Employee)-[:HAS_ACCESS_TO]->(app) "
+            "return app"
+        ))
+
+        assert cursor.forward() == 1
+        assert isinstance(cursor.current()['app'], Node)
         assert cursor.forward() == 0
