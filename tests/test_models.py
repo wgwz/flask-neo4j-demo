@@ -23,34 +23,69 @@ from models import EmployeeAppAccess
 
 class TestClient(object):
 
+    @classmethod
+    def setup_class(cls):
+
+        cls.LABELS = ['Client', 'Person']
+        cls.NUM_PROPERTIES = 2
+        cls.NUM_CLIENTS = 3
+
+        cls.COMPANY_ID = 'fake_company_id'
+        cls.COMPANY_NAME = 'fake_company_name'
+
+        cls.COMPANY_ID_0 = 'another-test-comp-id'
+        cls.COMPANY_NAME_0 = 'another-test-comp-name'
+
+        cls.COMPANY_ID_1 = 'one-more-test-comp-id'
+        cls.COMPANY_NAME_1 = 'one-more-test-comp-name'
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (c:Client) "
+            "detach delete c"
+        ))
+
     def test_create(self, db):
 
-        NUM_PROPERTIES = 2
-        COMPANY_ID = 'fake_company_id'
-        COMPANY_NAME = 'fake_company_name'
-        LABELS = ['Client', 'Person']
-
-        client = Client.create(COMPANY_ID, COMPANY_NAME)
+        self.client = BuildClient(self.COMPANY_ID, self.COMPANY_NAME)
+        self.client.init_rels()
 
         cursor = db.graph.run((
-                    "match (c:Client) "
-                    "where c.company_id='%s' " 
-                    "return c AS client" % COMPANY_ID
-                ))
-        cursor.forward()
+            "match (c:Client) "
+            "where c.company_id='%s' " 
+            "return c AS client" % self.COMPANY_ID
+        ))
+
+        assert cursor.forward() == 1
 
         result = cursor.current()['client']
 
-        assert result['company_id'] == COMPANY_ID
-        assert result['company_name'] == COMPANY_NAME
-        assert all([label in result.labels() for label in LABELS])
-        assert len(result.viewkeys()) == NUM_PROPERTIES
+        assert result['company_id'] == self.COMPANY_ID
+        assert result['company_name'] == self.COMPANY_NAME
+        assert all([label in result.labels() for label in self.LABELS])
+        assert len(result.viewkeys()) == self.NUM_PROPERTIES
 
-        db.graph.run((
-                    "match (c:Client) "
-                    "where c.company_id='%s' " 
-                    "delete c" % COMPANY_ID
-                ))
+    def test_list_all(self):
+
+        self.new_client_0 = BuildClient(self.COMPANY_ID_0, self.COMPANY_NAME_0)
+        self.new_client_0.init_rels()
+        self.new_client_1 = BuildClient(self.COMPANY_ID_1, self.COMPANY_NAME_1)
+        self.new_client_1.init_rels()
+
+        client_list = Client.list_all()
+
+        assert len(client_list) == self.NUM_CLIENTS
+
+    def test_list_all_with_compliance_status(self):
+
+        clients_with_compliance = Client.list_all_with_compliance_status()
+
+        assert len(clients_with_compliance) == self.NUM_CLIENTS
+        for result in clients_with_compliance:
+            assert result.get('client') is not None
+            assert result.get('completed') is not None
+            assert result.get('valid_onboard') is not None
 
 
 class TestOnboard(object):

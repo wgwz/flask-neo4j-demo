@@ -21,6 +21,21 @@ class Client(db.Model):
         db.graph.create(client)
         return client
 
+    @staticmethod
+    def list_all():
+        return [_ for _ in Client.select(db.graph)]
+
+    @staticmethod
+    def list_all_with_compliance_status():
+        cursor = db.graph.run((
+            "match (c:Client)-[:HAS_ONBOARD]->(o) "
+            "return c, o.completed AS completed, o.valid_onboard AS v"
+        ))
+        return [{
+            'client': result['c'],
+            'completed': result['completed'], 
+            'valid_onboard': result['v']} for result in cursor]
+
 
 class Onboard(db.Model):
     '''define the onboard node'''
@@ -467,3 +482,18 @@ def build_model():
     app_access_3.build()
 
     return 'model built'
+
+def build_clients():
+
+    COMPANY_ID_0 = 'another-test-comp-id'
+    COMPANY_NAME_0 = 'another-test-comp-name'
+
+    COMPANY_ID_1 = 'one-more-test-comp-id'
+    COMPANY_NAME_1 = 'one-more-test-comp-name'
+
+    new_client_0 = BuildClient(COMPANY_ID_0, COMPANY_NAME_0)
+    new_client_0.init_rels()
+    new_client_1 = BuildClient(COMPANY_ID_1, COMPANY_NAME_1)
+    new_client_1.init_rels()
+
+    return 'clients created'
