@@ -25,7 +25,7 @@ class TestClient(object):
 
     @classmethod
     def setup_class(cls):
-
+        '''for some reason this first setup_class does not work with a call to Client.create'''
         cls.LABELS = ['Client', 'Person']
         cls.NUM_PROPERTIES = 2
         cls.NUM_CLIENTS = 3
@@ -105,7 +105,7 @@ class TestOnboard(object):
         result = cursor.current()['onboard']
 
         assert result['completed'] == False
-        assert result['valid_onboard'] == False
+        assert result['valid_onboard'] == True
         assert len(result.viewkeys()) == NUM_PROPERTIES
 
         db.graph.run((
@@ -356,6 +356,8 @@ class TestUpdateClientOnboard(object):
         for step in cls.STEPS_COMPLETED:
             cls.update_onboard.mark_step_complete(step)
 
+        cls.NUM_DEPENDS_MAP = [0, 0, 0, 3, 4]
+
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
@@ -379,6 +381,227 @@ class TestUpdateClientOnboard(object):
         assert cursor.current()['s']['step_number'] == self.STEPS_COMPLETED[1]
 
         assert cursor.forward() == 0
+
+    def test_each_step_has_the_correct_number_of_dependencies(self):
+
+        for i, num_depends in zip(range(5), self.NUM_DEPENDS_MAP):
+            assert self.update_onboard.num_dependencies(i) == num_depends
+
+    def test_that_first_step_is_completed_dependency_for_the_fourth_step(self):
+
+        assert 0 in self.update_onboard.completed_dependencies(3)
+
+    def test_that_dependencies_are_not_satisfied_for_the_fourth_step(self):
+
+        assert not self.update_onboard.depends_satisfied(3)
+
+    def test_that_dependencies_are_satisfied_for_the_fourth_step(self):
+
+        self.update_onboard.mark_step_complete(0)
+        self.update_onboard.mark_step_complete(1)
+        self.update_onboard.mark_step_complete(2)
+
+        assert self.update_onboard.depends_satisfied(3)
+
+    def test_that_dependencies_are_not_satisfied_for_the_last_step(self):
+
+        assert not self.update_onboard.depends_satisfied(4)
+
+    def test_that_dependencies_are_satisfied_for_the_last_step(self):
+
+        self.update_onboard.mark_step_complete(3)
+
+        assert self.update_onboard.depends_satisfied(4)
+
+    def test_marking_a_step_as_invalid(self, db):
+
+        STEP = 3
+        VALID = False
+
+        self.update_onboard.mark_step_invalid(STEP)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[:INVALID]->(gs) "
+            "return gs, o"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['gs']['step_number'] == STEP
+        assert cursor.current()['o']['valid_onboard'] == VALID
+        assert cursor.forward() == 0 
+
+    def test_that_a_step_with_no_dependencies_gets_marked_correctly_with_aware_step_completion(self, db):
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "match (o)-[i:INVALID]->() "
+            "set o.valid_onboard=true "
+            "delete c, i"
+        ))
+        db.graph.pull(self.update_onboard.onboard)
+
+        num_steps = 3
+
+        for i in range(num_steps):
+            self.update_onboard.dependency_aware_mark_step_complete(i)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
+            "return o.valid_onboard AS valid, count(gs) AS num_complete"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == True
+        assert cursor.current()['num_complete'] == num_steps
+        assert cursor.forward() == 0
+
+        cursor_0 = db.graph.run((
+            "match (o:Onboard)-[:INVALID]->(gs) "
+            "return gs"
+        ))
+
+        assert cursor_0.forward() == 0
+
+    def test_that_onboard_remains_valid_for_a_step_with_satisfied_dependencies(self, db):
+        
+        num_steps = 2
+
+        for i in range(num_steps):
+            self.update_onboard.dependency_aware_mark_step_complete(i + 3)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
+            "return o.valid_onboard AS valid, count(gs) AS num_complete"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == True
+        assert cursor.current()['num_complete'] == 5
+        assert cursor.forward() == 0
+
+        cursor_0 = db.graph.run((
+            "match (o:Onboard)-[:INVALID]->(gs) "
+            "return gs"
+        ))
+
+        assert cursor_0.forward() == 0
+
+    def test_that_onboard_gets_invalidated_if_a_step_is_completed_before_a_dependency(self, db):
+
+        NUM_INVALID = 2
+        NUM_COMPLETE = 3
+        VALID = False
+
+        db.graph.run((
+            "match (:Onboard)-[c:HAS_COMPLETED]->() "
+            "delete c"
+        ))
+        db.graph.pull(self.update_onboard.onboard)
+
+        self.update_onboard.dependency_aware_mark_step_complete(3)
+        self.update_onboard.dependency_aware_mark_step_complete(4)
+        self.update_onboard.dependency_aware_mark_step_complete(1)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[r:HAS_COMPLETED|INVALID]->() "
+            "return o.valid_onboard as valid, type(r) as type, count(r) as count order by type"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == VALID
+        assert cursor.current()['count'] == NUM_COMPLETE
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == VALID
+        assert cursor.current()['count'] == NUM_INVALID
+        assert cursor.forward() == 0
+
+
+# class TestUpdateClientOnboardAware(object):
+
+#     @classmethod
+#     def setup_class(cls):
+
+#         cls.COMPANY_ID = 'uuid'
+#         cls.COMPANY_NAME = 'Company'
+
+#         cls.client = BuildClient(cls.COMPANY_ID, cls.COMPANY_NAME)
+#         cls.client.init_rels()
+        
+#         cls.generic = BuildGeneric()
+#         cls.generic.init_steps()
+#         cls.generic.init_steps_rels()
+        
+#         cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
+#         cls.client_onboard.init_rels()
+
+#         cls.update_onboard = UpdateClientOnboard(cls.COMPANY_ID)
+
+#     @classmethod
+#     def teardown_class(cls):
+#         _db.graph.run((
+#             "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
+#             "detach delete c, o, p, s"
+#         ))
+
+#     def test_that_a_step_with_no_dependencies_gets_marked_correctly_with_aware_step_completion(self, db):
+
+#         num_steps = 3
+
+#         for i in range(num_steps):
+#             self.update_onboard.dependency_aware_mark_step_complete(i)
+
+#         cursor = db.graph.run((
+#             "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
+#             "return o.valid_onboard AS valid, count(gs) AS num_complete"
+#         ))
+
+#         assert cursor.forward() == 1
+#         assert cursor.current()['valid'] == True
+#         assert cursor.current()['num_complete'] == num_steps
+#         assert cursor.forward() == 0
+
+#         cursor_0 = db.graph.run((
+#             "match (o:Onboard)-[:INVALID]->(gs) "
+#             "return gs"
+#         ))
+
+#         assert cursor_0.forward() == 0
+
+#     def test_that_onboard_remains_valid_for_a_step_with_satisfied_dependencies(self, db):
+        
+#         num_steps = 2
+
+#         for i in range(num_steps):
+#             self.update_onboard.dependency_aware_mark_step_complete(i + 3)
+
+#         cursor = db.graph.run((
+#             "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
+#             "return o.valid_onboard AS valid, count(gs) AS num_complete"
+#         ))
+
+#         assert cursor.forward() == 1
+#         assert cursor.current()['valid'] == True
+#         assert cursor.current()['num_complete'] == 5
+#         assert cursor.forward() == 0
+
+#         cursor_0 = db.graph.run((
+#             "match (o:Onboard)-[:INVALID]->(gs) "
+#             "return gs"
+#         ))
+
+#         assert cursor_0.forward() == 0
+
+#     def test_that_onboard_gets_invalidated_if_a_step_is_completed_before_a_dependency(self, db):
+#         db.graph.run((
+#             "match (:Onboard)-[c:HAS_COMPLETED]->() "
+#             "delete c"
+#         ))
+
+#         db.graph.pull(self.update_onboard.onboard)
+#         self.update_onboard.dependency_aware_mark_step_complete(3)
+#         self.update_onboard.dependency_aware_mark_step_complete(4)
+#         self.update_onboard.dependency_aware_mark_step_complete(1)
+
+#         assert False
 
 
 class TestCompanyNode(object):

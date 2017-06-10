@@ -43,13 +43,14 @@ class Onboard(db.Model):
     valid_onboard = db.Property()
 
     has_completed = db.RelatedTo('GenericStep')
+    invalid = db.RelatedTo('GenericStep')
     must_follow = db.RelatedTo('GenericProcess')
 
     @staticmethod
     def create():
         onboard = Onboard()
         onboard.completed = False
-        onboard.valid_onboard = False
+        onboard.valid_onboard = True
         db.graph.create(onboard)
         return onboard
 
@@ -193,12 +194,29 @@ class UpdateClientOnboard(object):
             company_id=company_id
         ).first().has_onboard)[0]
 
-    def can_step_be_completed(self, step_number):
-        step = GenericStep.select(db.graph).where(
-            step_number=step_number
-        ).first()
-        steps_dependencies = list(step.depends_on)
-        return steps_dependencies
+    def num_dependencies(self, step_number):
+        cursor = db.graph.run((
+            "match (s:GenericStep)-[:DEPENDS_ON*]->(ds) "
+            "where s.step_number=%d "
+            "return count(ds) AS num_depends" % step_number
+        ))
+        return cursor.next()['num_depends']
+
+    def completed_dependencies(self, step_number):
+        cursor = db.graph.run((
+            "match (s:GenericStep)-[r:DEPENDS_ON*]->(ds)"
+            "match (ds)<-[:HAS_COMPLETED]-(o) "
+            "where s.step_number=%d "
+            "return ds order by ds.step_number" % step_number
+        ))
+        return [result['ds']['step_number'] for result in cursor]
+
+    def depends_satisfied(self, step_number):
+        number_of_depends = self.num_dependencies(step_number)
+        completed_depends = self.completed_dependencies(step_number)
+        if number_of_depends == len(completed_depends):
+            return True
+        return False
 
     def mark_step_complete(self, step_number):
         step = GenericStep.select(db.graph).where(
@@ -207,6 +225,23 @@ class UpdateClientOnboard(object):
         self.onboard.has_completed.add(step)
         db.graph.push(self.onboard)
         return "marked step %d as complete" % step_number
+
+    def mark_step_invalid(self, step_number):
+        step = GenericStep.select(db.graph).where(
+            step_number=step_number
+        ).first()
+        self.onboard.invalid.add(step)
+        self.onboard.valid_onboard = False
+        db.graph.push(self.onboard)
+        return "marked step %d as invalid" % step_number
+
+    def dependency_aware_mark_step_complete(self, step_number):
+        if self.depends_satisfied(step_number):
+            self.mark_step_complete(step_number)
+            return "step marked as valid and complete"
+        self.mark_step_complete(step_number)
+        self.mark_step_invalid(step_number)
+        return "step marked as invalid and complete"
 
 
 class Company(db.Model):
