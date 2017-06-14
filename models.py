@@ -1,3 +1,10 @@
+# TODO: 1. document_id, see todo's
+# TODO: 2. submit_document update to client onboard, see todo's
+# TODO: 3. onboard process completion, see todo's
+# TODO: 4. test average time to completion function, dependent on 3
+# TODO: 5. visualize the average time to completion results 
+import arrow
+
 from extensions import db
 
 
@@ -23,36 +30,71 @@ class Client(db.Model):
 
     @staticmethod
     def list_all():
+        '''list all clients'''
         return [_ for _ in Client.select(db.graph)]
 
     @staticmethod
     def list_all_with_compliance_status():
+        '''get a list of all clients with compliance status'''
         cursor = db.graph.run((
             "match (c:Client)-[:HAS_ONBOARD]->(o) "
-            "return c, o.completed AS completed, o.valid_onboard AS v"
+            "return c, o.completed AS completed, o.valid_onboard AS v "
+            "order by c.company_name"
         ))
         return [{
             'client': result['c'],
             'completed': result['completed'], 
             'valid_onboard': result['v']} for result in cursor]
 
+    @staticmethod
+    def list_all_with_document_status():
+        '''get a list of all clients with document status'''
+        cursor = db.graph.run((
+            "match (c:Client)-[:HAS_ONBOARD]->()-[:MISSING_DOCUMENT]->(d)-[:FOR_STEP]->(s) "
+            "return c, d, s "
+            "order by c.company_name, s.step_number"
+        ))
+        return [{
+            'client': result['c'],
+            'document_type': result['d']['document_type'],
+            'step_number': result['s']['step_number']} for result in cursor]
+
 
 class Onboard(db.Model):
     '''define the onboard node'''
     completed = db.Property()
     valid_onboard = db.Property()
+    time_created = db.Property()
+    time_completed = db.Property()
 
     has_completed = db.RelatedTo('GenericStep')
     invalid = db.RelatedTo('GenericStep')
     must_follow = db.RelatedTo('GenericProcess')
+    missing_document = db.RelatedTo('GenericDocument')
+    submitted_document = db.RelatedTo('GenericDocument')
 
     @staticmethod
     def create():
         onboard = Onboard()
+        
         onboard.completed = False
         onboard.valid_onboard = True
+        
+        a = arrow.utcnow()
+        onboard.time_created = a.timestamp
+        onboard.time_completed = None
+
         db.graph.create(onboard)
         return onboard
+
+    @staticmethod
+    def compute_average():
+        '''calculate the average time to completion'''
+        ttc = [_.time_completed - _.time_created for _ in Onboard.select(db.graph) if _.time_completed]
+        if ttc:
+            ave_ttc = int(round(float(sum(ttc)) / len(ttc)))
+            return ave_ttc
+        return None
 
 
 class BuildClient(object):
@@ -73,6 +115,7 @@ class GenericProcess(db.Model):
     first_step = db.RelatedTo('GenericStep')
     last_step = db.RelatedTo('GenericStep')
     next = db.RelatedTo('GenericStep')
+    requires_document = db.RelatedTo('GenericDocument')
 
     @staticmethod
     def create():
@@ -96,6 +139,7 @@ class GenericStep(db.Model):
 
     next = db.RelatedTo('GenericStep')
     depends_on = db.RelatedTo('GenericStep')
+    needs_document = db.RelatedTo('GenericDocument')
 
     @staticmethod
     def create(task_name, step_number, step_duration):
@@ -103,9 +147,23 @@ class GenericStep(db.Model):
         step.task_name = task_name
         step.step_number = step_number
         step.duration = step_duration
-        step.completed = False
         db.graph.create(step)
         return step
+
+
+class GenericDocument(db.Model):
+
+    document_id = db.Property() # TODO: add in a document_id, propagate change to testing 
+    document_type = db.Property()
+
+    for_step = db.RelatedTo('GenericStep')
+
+    @staticmethod
+    def create(document_type):
+        document = GenericDocument()
+        document.document_type = document_type
+        db.graph.create(document)
+        return document
 
 
 class BuildGeneric(object):
@@ -113,6 +171,7 @@ class BuildGeneric(object):
     def __init__(self):
         self.generic = GenericProcess.create()
         self.steps = []
+        self.documents = []
         self.tasks = [{
             'task_name': 'get signed contracts', 
             'duration': 3
@@ -131,6 +190,36 @@ class BuildGeneric(object):
             'duration': 3,
             'depends_on': [3]
         }]
+        self.document_metadata = [{
+            'type': 'signed contract', 
+            'for_step': 0
+        }, {
+            'type': 'personal identification', 
+            'for_step': 1
+        }, {
+            'type': 'tax identification', 
+            'for_step': 1
+        }, {
+            'type': 'articles of incorporation', 
+            'for_step': 1
+        }, {
+            'type': 'professional license', 
+            'for_step': 1
+        }, {
+            'type': 'miscellaneous', 
+            'for_step': 1
+        }, {
+            'type': 'compliance review', 
+            'for_step': 2
+        }, {
+            'type': 'countersign contracts', 
+            'for_step': 3
+        }, {
+            'type': 'account activation', 
+            'for_step': 4
+        }]
+        for i in range(len(self.document_metadata)):
+            self.document_metadata[i]['id'] = i
 
     def init_steps(self):
         for step_number, task in enumerate(self.tasks):
@@ -170,8 +259,33 @@ class BuildGeneric(object):
             prior_step = each_step
 
         db.graph.push(self.generic)
+        return 'generic process steps structure built'
+
+    def init_docs(self):
+        for document in self.document_metadata:
+            self.documents.append(GenericDocument.create(document['type']))
+        return self.documents
+
+    def init_docs_rels(self):
+        for document in self.documents:
+            self.generic.requires_document.add(document)
+        db.graph.push(self.generic)
+        return 'generic process document structure built'
+
+    def init_docs_steps_rels(self):
+        for document_number, meta in enumerate(self.document_metadata):
+            self.documents[document_number].for_step.add(self.steps[meta['for_step']])
+            db.graph.push(self.documents[document_number])
+        return 'generic process document step structure built'
+
+    def init(self):
+        self.init_steps()
+        self.init_steps_rels()
+        self.init_docs()
+        self.init_docs_rels()
+        self.init_docs_steps_rels()
         return 'generic process structure built'
-    
+
 
 class BuildClientOnboard(object):
 
@@ -183,12 +297,18 @@ class BuildClientOnboard(object):
 
     def init_rels(self):
         self.onboard.must_follow.add(self.generic)
+
+        for document in GenericDocument.select(db.graph):
+            self.onboard.missing_document.add(document)
+
         db.graph.push(self.onboard)
-        return "structure built"
+
+        return "client with onboard structure built"
 
 
 class UpdateClientOnboard(object):
-    # TODO: finish can step be completed AKA have dependencies be met
+    '''logic for updating the onboard node and structure in vicinity'''
+
     def __init__(self, company_id):
         self.onboard = list(Client.select(db.graph).where(
             company_id=company_id
@@ -218,6 +338,9 @@ class UpdateClientOnboard(object):
             return True
         return False
 
+    # TODO: perhaps this function should also be responsible for marking the entire process as completed
+    # TODO: create another function that will mark the completion switch
+    # TODO: i.e. if the number of steps currently completed is 1 lt the total number of steps in graph -> mark the process completed
     def mark_step_complete(self, step_number):
         step = GenericStep.select(db.graph).where(
             step_number=step_number
@@ -242,6 +365,9 @@ class UpdateClientOnboard(object):
         self.mark_step_complete(step_number)
         self.mark_step_invalid(step_number)
         return "step marked as invalid and complete"
+
+    # TODO: after adding document_id, finish this method to add a document
+    # TODO: when a doc is submitted, the missing rel should be deleted
 
 
 class Company(db.Model):
@@ -471,8 +597,7 @@ def build_model():
     client_2.init_rels()
    
     generic = BuildGeneric()
-    generic.init_steps()
-    generic.init_steps_rels()
+    generic.init()
 
     cli_1_onboard = BuildClientOnboard('company_id_1')
     cli_1_onboard.init_rels()

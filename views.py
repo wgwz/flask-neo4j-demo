@@ -20,7 +20,7 @@ def funnel():
 
 @bp.route('/gap_analysis')
 def gap_analysis():
-    return render_template('gap_analysis.html')
+    return render_template('gap_analysis.html', clients = Client.list_all_with_document_status())
 
 @bp.route('/kpi')
 def kpi():

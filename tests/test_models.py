@@ -1,3 +1,4 @@
+# note: these are integration tests bc it tests with a live db
 # tests are written with reads via cypher
 # the primary reason for this is that
 # in production direct cypher queries are likely to be faster
@@ -5,14 +6,14 @@
 from py2neo.types import Node
 
 # _db used in class level teardown
-# bc using the db-fixture there did not seem to work
+# bc using the db-fixture there does not work
 # https://docs.pytest.org/en/latest/xunit_setup.html#class-level-setup-teardown
 from extensions import db as _db
 
 # broken into multiple lines to try to organize similar logic
 # for the future this could be modularized further
 from models import Client, Onboard, BuildClient
-from models import GenericProcess, GenericStep, BuildGeneric
+from models import GenericProcess, GenericStep, GenericDocument, BuildGeneric
 from models import BuildClientOnboard, UpdateClientOnboard
 from models import Company, Employee, BuildEmployee
 from models import Project, EmployeeInvolvement, EmployeeAccess
@@ -193,13 +194,37 @@ class TestGenericStep(object):
         db.graph.run("match (s:GenericStep) delete s")
 
 
+class TestGenericDocumentNode(object):
+
+    @classmethod
+    def setup_class(cls):
+        cls.DOCUMENT_TYPE = 'docx is dead'
+        cls.document = GenericDocument.create(cls.DOCUMENT_TYPE)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (d:GenericDocument) "
+            "delete d"
+        ))
+
+    def test_generic_document_node(self, db):
+
+        cursor = db.graph.run((
+            "match (d:GenericDocument) "
+            "return d"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['d']['document_type'] == self.DOCUMENT_TYPE
+
 class TestBuildGeneric(object):
 
     @classmethod
     def setup_class(cls):
         cls.generic = BuildGeneric()
-        cls.generic.init_steps()
-        cls.generic.init_steps_rels()
+        cls.generic.init()
+
         cls.NUM_STEPS = 5
         cls.STEPS_WITH_DEPENDS = {3, 4}
         cls.DEPENDENCIES = {3: set([0, 1, 2]), 4: set([0, 1, 2, 3])}
@@ -207,8 +232,8 @@ class TestBuildGeneric(object):
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
-            "match (p:GenericProcess)-[:NEXT*]->(s) "
-            "detach delete s, p"
+            "match (d)<-[:REQUIRES_DOCUMENT]-(p:GenericProcess)-[:NEXT*]->(s) "
+            "detach delete s, p, d"
         ))
 
     def test_next_rel(self, db):
@@ -286,6 +311,26 @@ class TestBuildGeneric(object):
 
         assert results == self.DEPENDENCIES
 
+    def test_requires_document_rel(self, db):
+
+        cursor = db.graph.run((
+            "match (:GenericProcess)-[:REQUIRES_DOCUMENT]->(d) "
+            "return d"
+        ))
+
+        assert len([_ for _ in cursor]) == len(self.generic.document_metadata)
+        assert cursor.current()['d'].has_label('GenericDocument')
+
+    def test_docs_steps_structure_for_step_rel(self, db):
+
+        cursor = db.graph.run((
+            "match (:GenericStep)<-[:FOR_STEP]-(d) "
+            "return d"
+        ))
+
+        assert len([_ for _ in cursor]) == len(self.generic.document_metadata)
+        assert cursor.current()['d'].has_label('GenericDocument')
+
 
 class TestBuildClientOnboard(object):
 
@@ -299,8 +344,7 @@ class TestBuildClientOnboard(object):
         cls.client.init_rels()
         
         cls.generic = BuildGeneric()
-        cls.generic.init_steps()
-        cls.generic.init_steps_rels()
+        cls.generic.init()
         
         cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
         cls.client_onboard.init_rels()
@@ -308,8 +352,8 @@ class TestBuildClientOnboard(object):
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
-            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
-            "detach delete c, o, p, s"
+            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep), (d:GenericDocument) "
+            "detach delete c, o, p, s, d"
         ))
 
     def test_must_follow_rel(self, db):
@@ -330,6 +374,16 @@ class TestBuildClientOnboard(object):
 
         assert cursor.forward() == 0
 
+    def test_missing_docs_rels(self, db):
+
+        cursor = db.graph.run((
+            "match (:Onboard)-[:MISSING_DOCUMENT]->(d) "
+            "return d"
+        ))
+
+        assert len([_ for _ in cursor]) == len(self.generic.document_metadata)
+        assert cursor.current()['d'].has_label('GenericDocument')
+
 
 class TestUpdateClientOnboard(object):
 
@@ -343,8 +397,7 @@ class TestUpdateClientOnboard(object):
         cls.client.init_rels()
         
         cls.generic = BuildGeneric()
-        cls.generic.init_steps()
-        cls.generic.init_steps_rels()
+        cls.generic.init()
         
         cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
         cls.client_onboard.init_rels()
@@ -361,7 +414,7 @@ class TestUpdateClientOnboard(object):
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
-            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep) "
+            "match (c:Client), (o:Onboard), (p:GenericProcess), (s:GenericStep), (d:GenericDocument) "
             "detach delete c, o, p, s"
         ))
 
@@ -702,8 +755,7 @@ class TestEmployeeAccess(object):
         cls.build_client.init_rels()
 
         cls.build_generic = BuildGeneric()
-        cls.build_generic.init_steps()
-        cls.build_generic.init_steps_rels()
+        cls.build_generic.init()
 
         cls.build_cli_onboard = BuildClientOnboard(cls.CLIENT_ID)
         cls.build_cli_onboard.init_rels()
