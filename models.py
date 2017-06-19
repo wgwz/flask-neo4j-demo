@@ -1,6 +1,3 @@
-# TODO: 1. document_id, see todo's
-# TODO: 2. submit_document update to client onboard, see todo's
-# TODO: 3. onboard process completion, see todo's
 # TODO: 4. test average time to completion function, dependent on 3
 # TODO: 5. visualize the average time to completion results 
 import arrow
@@ -97,7 +94,7 @@ class Onboard(db.Model):
         return None
 
 
-class BuildClient(object):
+class BuildClientOnboard(object):
     '''build the structure/relationships around the client node'''
     def __init__(self, company_id, company_name):
         self.client = Client.create(company_id, company_name)
@@ -107,6 +104,10 @@ class BuildClient(object):
         self.client.has_onboard.add(self.onboard)
         db.graph.push(self.client)
         return 'initial client steps structure built'
+
+    def init(self):
+        self.init_rels()
+        return 'initial client structure built'
 
 
 class GenericProcess(db.Model):
@@ -150,23 +151,28 @@ class GenericStep(db.Model):
         db.graph.create(step)
         return step
 
+    @staticmethod
+    def all():
+        return [_ for _ in GenericStep.select(db.graph)]
+
 
 class GenericDocument(db.Model):
 
-    document_id = db.Property() # TODO: add in a document_id, propagate change to testing 
+    document_id = db.Property() 
     document_type = db.Property()
 
     for_step = db.RelatedTo('GenericStep')
 
     @staticmethod
-    def create(document_type):
+    def create(document_id, document_type):
         document = GenericDocument()
+        document.document_id = document_id
         document.document_type = document_type
         db.graph.create(document)
         return document
 
 
-class BuildGeneric(object):
+class BuildGenericProcess(object):
 
     def __init__(self):
         self.generic = GenericProcess.create()
@@ -190,7 +196,7 @@ class BuildGeneric(object):
             'duration': 3,
             'depends_on': [3]
         }]
-        self.document_metadata = [{
+        self.document_metadata = [{            
             'type': 'signed contract', 
             'for_step': 0
         }, {
@@ -263,7 +269,7 @@ class BuildGeneric(object):
 
     def init_docs(self):
         for document in self.document_metadata:
-            self.documents.append(GenericDocument.create(document['type']))
+            self.documents.append(GenericDocument.create(document['id'], document['type']))
         return self.documents
 
     def init_docs_rels(self):
@@ -287,7 +293,7 @@ class BuildGeneric(object):
         return 'generic process structure built'
 
 
-class BuildClientOnboard(object):
+class BuildOnboardGenericProcess(object):
 
     def __init__(self, company_id):
         self.onboard = list(Client.select(db.graph).where(
@@ -303,7 +309,11 @@ class BuildClientOnboard(object):
 
         db.graph.push(self.onboard)
 
-        return "client with onboard structure built"
+        return "onboarding rels added"
+
+    def init(self):
+        self.init_rels()
+        return 'onboarding structure added to client'
 
 
 class UpdateClientOnboard(object):
@@ -338,9 +348,19 @@ class UpdateClientOnboard(object):
             return True
         return False
 
-    # TODO: perhaps this function should also be responsible for marking the entire process as completed
-    # TODO: create another function that will mark the completion switch
-    # TODO: i.e. if the number of steps currently completed is 1 lt the total number of steps in graph -> mark the process completed
+    def mark_onboard_complete(self):
+        a = arrow.utcnow()
+        self.onboard.completed = True
+        self.onboard.time_completed = a.timestamp
+        db.graph.push(self.onboard)
+        return 'onboard process marked complete'
+
+    def step_aware_mark_onboard_complete(self):
+        '''will mark the onboard process as complete if all the generic steps have been completed'''
+        if len(list(self.onboard.has_completed)) == len(GenericStep.all()):
+            self.mark_onboard_complete()
+        return 'onboard process not complete'
+
     def mark_step_complete(self, step_number):
         step = GenericStep.select(db.graph).where(
             step_number=step_number
@@ -366,8 +386,17 @@ class UpdateClientOnboard(object):
         self.mark_step_invalid(step_number)
         return "step marked as invalid and complete"
 
-    # TODO: after adding document_id, finish this method to add a document
-    # TODO: when a doc is submitted, the missing rel should be deleted
+    def aware_mark_step_complete(self, step_number):
+        self.dependency_aware_mark_step_complete(step_number)
+        self.step_aware_mark_onboard_complete()
+        return "recorded action for step %d and appropriately adjusted onboard activity" % step_number
+
+    def submit_document(self, document_id):
+        document = GenericDocument.select(db.graph).where(document_id=document_id).first()
+        self.onboard.submitted_document.add(document)
+        self.onboard.missing_document.remove(document)
+        db.graph.push(self.onboard)
+        return 'marked document_%d as submitted' % document_id
 
 
 class Company(db.Model):
@@ -412,7 +441,7 @@ class Employee(db.Model):
         return employee
 
 
-class BuildEmployee(object):
+class BuildEmployeeCompany(object):
     
     def __init__(self, employee_id, employee_email, company_name):
         self.employee = Employee.push(employee_id, employee_email)
@@ -437,7 +466,7 @@ class Project(db.Model):
         return project
 
 
-class EmployeeInvolvement(object):
+class BuildEmployeeInvolvement(object):
 
     def __init__(self, employee_id, client_id):
         self.employee = Employee.select(db.graph).where(
@@ -458,7 +487,7 @@ class EmployeeInvolvement(object):
         return 'added employee involvement'
 
 
-class EmployeeAccess(object):
+class UpdateEmployeeAccess(object):
 
     def __init__(self, employee_id):
         self.employee_id = employee_id
@@ -528,7 +557,7 @@ class Database(db.Model):
         return database
 
 
-class CrmDatabase(object):
+class BuildCrmDatabase(object):
    
     def __init__(self, app_name, database_type):
         self.crm_app = Application.push_crm(app_name)
@@ -541,7 +570,7 @@ class CrmDatabase(object):
         return 'structure built'
 
 
-class ErpDatabase(object):
+class BuildErpDatabase(object):
    
     def __init__(self, app_name, database_type):
         self.erp_app = Application.push_erp(app_name)
@@ -554,7 +583,7 @@ class ErpDatabase(object):
         return 'structure built'
 
 
-class ComplianceDatabase(object):
+class BuildComplianceDatabase(object):
    
     def __init__(self, app_name, database_type):
         self.comp_app = Application.push_compliance(app_name)
@@ -590,46 +619,46 @@ class EmployeeAppAccess(object):
 
 def build_model():
     
-    client_1 = BuildClient('company_id_1', 'company_name_1')
+    client_1 = BuildClientOnboard('company_id_1', 'company_name_1')
     client_1.init_rels()
     
-    client_2 = BuildClient('company_id_2', 'company_name_2')
+    client_2 = BuildClientOnboard('company_id_2', 'company_name_2')
     client_2.init_rels()
    
-    generic = BuildGeneric()
+    generic = BuildGenericProcess()
     generic.init()
 
-    cli_1_onboard = BuildClientOnboard('company_id_1')
+    cli_1_onboard = BuildOnboardGenericProcess('company_id_1')
     cli_1_onboard.init_rels()
     
-    cli_2_onboard = BuildClientOnboard('company_id_2')
+    cli_2_onboard = BuildOnboardGenericProcess('company_id_2')
     cli_2_onboard.init_rels()
 
-    employee_1 = BuildEmployee('employee_id_1', 'employee_email_1', 'Citi')
-    employee_2 = BuildEmployee('employee_id_2', 'employee_email_2', 'Citi')
+    employee_1 = BuildEmployeeCompany('employee_id_1', 'employee_email_1', 'Citi')
+    employee_2 = BuildEmployeeCompany('employee_id_2', 'employee_email_2', 'Citi')
     
     employee_1.init_rels()
     employee_2.init_rels()
 
-    empl_cust_involve_1 = EmployeeInvolvement('employee_id_1', 'company_id_1')
-    empl_cust_involve_2 = EmployeeInvolvement('employee_id_2', 'company_id_2')
+    empl_cust_involve_1 = BuildEmployeeInvolvement('employee_id_1', 'company_id_1')
+    empl_cust_involve_2 = BuildEmployeeInvolvement('employee_id_2', 'company_id_2')
     
     empl_cust_involve_1.init_rels()
     empl_cust_involve_2.init_rels()
 
-    customer_access_1 = EmployeeAccess('employee_id_1')
-    customer_access_2 = EmployeeAccess('employee_id_2')
+    customer_access_1 = UpdateEmployeeAccess('employee_id_1')
+    customer_access_2 = UpdateEmployeeAccess('employee_id_2')
 
     customer_access_1.update_step_access('company_id_1', 4)
     customer_access_2.update_step_access('company_id_2', 2)
 
-    crm = CrmDatabase('Salesforce', 'cloud')
+    crm = BuildCrmDatabase('Salesforce', 'cloud')
     crm.build()
 
-    erp = ErpDatabase('SAP', 'Oracle1')
+    erp = BuildErpDatabase('SAP', 'Oracle1')
     erp.build()
 
-    compliance = ComplianceDatabase('Actimize', 'SqlServer1')
+    compliance = BuildComplianceDatabase('Actimize', 'SqlServer1')
     compliance.build()
 
     app_access_1 = EmployeeAppAccess('Crm', 'employee_id_1')
@@ -651,9 +680,9 @@ def build_clients():
     COMPANY_ID_1 = 'one-more-test-comp-id'
     COMPANY_NAME_1 = 'one-more-test-comp-name'
 
-    new_client_0 = BuildClient(COMPANY_ID_0, COMPANY_NAME_0)
+    new_client_0 = BuildClientOnboard(COMPANY_ID_0, COMPANY_NAME_0)
     new_client_0.init_rels()
-    new_client_1 = BuildClient(COMPANY_ID_1, COMPANY_NAME_1)
+    new_client_1 = BuildClientOnboard(COMPANY_ID_1, COMPANY_NAME_1)
     new_client_1.init_rels()
 
     return 'clients created'

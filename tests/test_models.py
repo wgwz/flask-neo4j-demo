@@ -4,6 +4,8 @@
 # in production direct cypher queries are likely to be faster
 
 from py2neo.types import Node
+import arrow 
+from mock import patch, MagicMock
 
 # _db used in class level teardown
 # bc using the db-fixture there does not work
@@ -12,13 +14,13 @@ from extensions import db as _db
 
 # broken into multiple lines to try to organize similar logic
 # for the future this could be modularized further
-from models import Client, Onboard, BuildClient
-from models import GenericProcess, GenericStep, GenericDocument, BuildGeneric
-from models import BuildClientOnboard, UpdateClientOnboard
-from models import Company, Employee, BuildEmployee
-from models import Project, EmployeeInvolvement, EmployeeAccess
+from models import Client, Onboard, BuildClientOnboard
+from models import GenericProcess, GenericStep, GenericDocument, BuildGenericProcess
+from models import BuildOnboardGenericProcess, UpdateClientOnboard
+from models import Company, Employee, BuildEmployeeCompany
+from models import Project, BuildEmployeeInvolvement, UpdateEmployeeAccess
 from models import Application, Database
-from models import CrmDatabase, ErpDatabase, ComplianceDatabase
+from models import BuildCrmDatabase, BuildErpDatabase, BuildComplianceDatabase
 from models import EmployeeAppAccess
 
 
@@ -49,7 +51,7 @@ class TestClient(object):
 
     def test_create(self, db):
 
-        self.client = BuildClient(self.COMPANY_ID, self.COMPANY_NAME)
+        self.client = BuildClientOnboard(self.COMPANY_ID, self.COMPANY_NAME)
         self.client.init_rels()
 
         cursor = db.graph.run((
@@ -69,9 +71,9 @@ class TestClient(object):
 
     def test_list_all(self):
 
-        self.new_client_0 = BuildClient(self.COMPANY_ID_0, self.COMPANY_NAME_0)
+        self.new_client_0 = BuildClientOnboard(self.COMPANY_ID_0, self.COMPANY_NAME_0)
         self.new_client_0.init_rels()
-        self.new_client_1 = BuildClient(self.COMPANY_ID_1, self.COMPANY_NAME_1)
+        self.new_client_1 = BuildClientOnboard(self.COMPANY_ID_1, self.COMPANY_NAME_1)
         self.new_client_1.init_rels()
 
         client_list = Client.list_all()
@@ -93,7 +95,7 @@ class TestOnboard(object):
 
     def test_create(self, db):
 
-        NUM_PROPERTIES = 2
+        NUM_PROPERTIES = 3
 
         onboard = Onboard.create()
 
@@ -107,6 +109,8 @@ class TestOnboard(object):
 
         assert result['completed'] == False
         assert result['valid_onboard'] == True
+        assert arrow.get(result['time_started'])
+        assert result['time_completed'] is None
         assert len(result.viewkeys()) == NUM_PROPERTIES
 
         db.graph.run((
@@ -114,8 +118,45 @@ class TestOnboard(object):
                     "delete o"
                 ))
 
+    @patch('models.Onboard.select')
+    def test_average_time_to_completion(self, select_patch):
 
-class TestBuildClient(object):
+        AVERAGE_TTC = 3 # in this case, by design (see loop below)
+
+        result_mocks = [MagicMock() for i in range(3)]
+
+        a = arrow.utcnow()
+        for counter, result_mock in enumerate(result_mocks):
+            result_mock.time_created = a.timestamp
+            result_mock.time_completed = a.timestamp + 2 * counter + 1
+
+        select_patch.return_value = result_mocks
+
+        average_ttc = Onboard.compute_average()
+
+        assert average_ttc == AVERAGE_TTC
+
+    @patch('models.Onboard.select')
+    def test_average_time_to_completion_is_None_when_time_completed_not_present(self, select_patch):
+
+        AVERAGE_TTC = None
+
+        result_mocks = [MagicMock() for i in range(3)]
+
+        a = arrow.utcnow()
+        for counter, result_mock in enumerate(result_mocks):
+            result_mock.time_created = a.timestamp
+            result_mock.time_completed = None
+
+        select_patch.return_value = result_mocks
+
+        average_ttc = Onboard.compute_average()
+
+        assert average_ttc == AVERAGE_TTC
+
+
+
+class TestBuildClientOnboard(object):
 
     def test_initialize_new_client(self, db):
 
@@ -123,8 +164,8 @@ class TestBuildClient(object):
         COMPANY_NAME = 'new_company_name'
         REL_TYPE = 'HAS_ONBOARD'
 
-        build_client = BuildClient(COMPANY_ID, COMPANY_NAME)
-        build_client.init_rels()
+        build_client = BuildClientOnboard(COMPANY_ID, COMPANY_NAME)
+        build_client.init()
 
         cursor = db.graph.run((
                 "match (c:Client)-[r:%s]->(o) "
@@ -193,13 +234,25 @@ class TestGenericStep(object):
 
         db.graph.run("match (s:GenericStep) delete s")
 
+    def test_all_method_returns_array_of_proper_length(self, db):
+
+        GenericStep.create('task-a', 0, 15)
+        GenericStep.create('task-b', 0, 30)
+
+        all_steps = GenericStep.all()
+
+        assert len(all_steps) == 2
+
+        db.graph.run("match (s:GenericStep) delete s")
+
 
 class TestGenericDocumentNode(object):
 
     @classmethod
     def setup_class(cls):
+        cls.DOCUMENT_ID = 'test-doc-uuid'
         cls.DOCUMENT_TYPE = 'docx is dead'
-        cls.document = GenericDocument.create(cls.DOCUMENT_TYPE)
+        cls.document = GenericDocument.create(cls.DOCUMENT_ID, cls.DOCUMENT_TYPE)
 
     @classmethod
     def teardown_class(cls):
@@ -216,13 +269,14 @@ class TestGenericDocumentNode(object):
         ))
 
         assert cursor.forward() == 1
+        assert cursor.current()['d']['document_id'] == self.DOCUMENT_ID
         assert cursor.current()['d']['document_type'] == self.DOCUMENT_TYPE
 
-class TestBuildGeneric(object):
+class TestBuildGenericProcess(object):
 
     @classmethod
     def setup_class(cls):
-        cls.generic = BuildGeneric()
+        cls.generic = BuildGenericProcess()
         cls.generic.init()
 
         cls.NUM_STEPS = 5
@@ -332,7 +386,7 @@ class TestBuildGeneric(object):
         assert cursor.current()['d'].has_label('GenericDocument')
 
 
-class TestBuildClientOnboard(object):
+class TestBuildOnboardGenericProcess(object):
 
     @classmethod
     def setup_class(cls):
@@ -340,14 +394,14 @@ class TestBuildClientOnboard(object):
         cls.COMPANY_ID = 'some-id-for-company'
         cls.COMPANY_NAME = 'some-comp-name'
 
-        cls.client = BuildClient(cls.COMPANY_ID, cls.COMPANY_NAME)
+        cls.client = BuildClientOnboard(cls.COMPANY_ID, cls.COMPANY_NAME)
         cls.client.init_rels()
         
-        cls.generic = BuildGeneric()
+        cls.generic = BuildGenericProcess()
         cls.generic.init()
         
-        cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
-        cls.client_onboard.init_rels()
+        cls.client_onboard = BuildOnboardGenericProcess(cls.COMPANY_ID)
+        cls.client_onboard.init()
 
     @classmethod
     def teardown_class(cls):
@@ -393,23 +447,26 @@ class TestUpdateClientOnboard(object):
         cls.COMPANY_ID = 'some-id-for-company'
         cls.COMPANY_NAME = 'some-comp-name'
 
-        cls.client = BuildClient(cls.COMPANY_ID, cls.COMPANY_NAME)
-        cls.client.init_rels()
+        cls.client = BuildClientOnboard(cls.COMPANY_ID, cls.COMPANY_NAME)
+        cls.client.init()
         
-        cls.generic = BuildGeneric()
+        cls.generic = BuildGenericProcess()
         cls.generic.init()
         
-        cls.client_onboard = BuildClientOnboard(cls.COMPANY_ID)
-        cls.client_onboard.init_rels()
+        cls.client_onboard = BuildOnboardGenericProcess(cls.COMPANY_ID)
+        cls.client_onboard.init()
 
         cls.REL_TYPE = 'HAS_COMPLETED'
-        cls.STEPS_COMPLETED = [0, 4]
+        
         cls.update_onboard = UpdateClientOnboard(cls.COMPANY_ID)
 
+        cls.STEPS_COMPLETED = [0, 4]
         for step in cls.STEPS_COMPLETED:
             cls.update_onboard.mark_step_complete(step)
 
         cls.NUM_DEPENDS_MAP = [0, 0, 0, 3, 4]
+
+        cls.DOCUMENT_ID_TO_SUBMIT = 1
 
     @classmethod
     def teardown_class(cls):
@@ -567,6 +624,150 @@ class TestUpdateClientOnboard(object):
         assert cursor.current()['count'] == NUM_INVALID
         assert cursor.forward() == 0
 
+    def test_that_document_can_be_submitted(self, db):
+
+        self.update_onboard.submit_document(self.DOCUMENT_ID_TO_SUBMIT)
+
+        cursor = db.graph.run((
+            "match (:Onboard)-[:SUBMITTED_DOCUMENT]->(d) "
+            "return d"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['d']['document_id'] == self.DOCUMENT_ID_TO_SUBMIT
+        assert cursor.forward() == 0
+
+    def test_that_is_not_marked_as_missing_when_submitted(self, db):
+
+        cursor = db.graph.run((
+            "match (:Onboard)-[:MISSING_DOCUMENT]->(d) "
+            "where d.document_id=%d "
+            "return d" % self.DOCUMENT_ID_TO_SUBMIT
+        ))
+
+        assert cursor.forward() == 0
+
+    def test_mark_onboard_as_completed(self, db):
+
+        COMPLETION_STATUS = True
+
+        self.update_onboard.mark_onboard_complete()
+
+        cursor = db.graph.run((
+            "match (o:Onboard) "
+            "return o.completed AS c, o.time_completed AS time_completed"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['c'] == COMPLETION_STATUS
+        assert arrow.get(cursor.current()['time_completed'])
+        assert cursor.forward() == 0
+
+    def test_step_aware_mark_onboard_complete_does_not_mark_onboard_as_complete_if_steps_are_not_complete(self, db):
+
+        COMPLETION_STATUS = False
+
+        # reset some stuff for this test
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "set o.completed=false "
+            "delete c"
+        ))
+        # pull down the change for py2neo
+        db.graph.pull(self.update_onboard.onboard) 
+
+        # mark some steps as complete
+        self.update_onboard.mark_step_complete(1)
+        self.update_onboard.mark_step_complete(2)
+
+        # try to mark onboard as complete (should have no effect)
+        self.update_onboard.step_aware_mark_onboard_complete()
+
+        cursor = db.graph.run((
+            "match (o:Onboard) "
+            "return o.completed AS completed"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['completed'] == COMPLETION_STATUS
+        assert cursor.forward() == 0
+
+    def test_step_aware_mark_onboard_complete_suceeds_if_all_steps_have_been_completed(self, db):
+
+        COMPLETION_STATUS = True
+
+        # reset some stuff for this test
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "set o.completed=false "
+            "delete c"
+        ))
+        # pull down the change for py2neo
+        db.graph.pull(self.update_onboard.onboard) 
+
+        # mark all steps as complete
+        for i in range(len(GenericStep.all())):
+            self.update_onboard.mark_step_complete(i)
+
+        # mark onboard as complete
+        self.update_onboard.step_aware_mark_onboard_complete()
+
+        cursor = db.graph.run((
+            "match (o:Onboard) "
+            "return o.completed AS completed"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['completed'] == COMPLETION_STATUS
+        assert cursor.forward() == 0
+
+    def test_that_aware_step_mark_completion_will_NOT_mark_onboard_complete_if_steps_incomplete(self, db):
+
+        COMPLETION_STATUS = False
+
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "set o.completed=false "
+            "delete c"
+        ))
+        db.graph.pull(self.update_onboard.onboard)
+
+        self.update_onboard.aware_mark_step_complete(1)
+        self.update_onboard.aware_mark_step_complete(2)
+        self.update_onboard.aware_mark_step_complete(4)
+
+        cursor = db.graph.run((
+            "match (o:Onboard) "
+            "return o.completed AS completed"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['completed'] == COMPLETION_STATUS
+        assert cursor.forward() == 0
+
+    def test_that_aware_step_mark_completion_DOES_mark_onboard_complete_if_ALL_steps_complete(self, db):
+
+        COMPLETION_STATUS = True
+
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "set o.completed=false "
+            "delete c"
+        ))
+        db.graph.pull(self.update_onboard.onboard)
+
+        for i in range(len(GenericStep.all())):
+            self.update_onboard.aware_mark_step_complete(i)
+
+        cursor = db.graph.run((
+            "match (o:Onboard) "
+            "return o.completed AS completed"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['completed'] == COMPLETION_STATUS
+        assert cursor.forward() == 0
+
 
 class TestCompanyNode(object):
 
@@ -630,7 +831,7 @@ class TestEmployeeNode(object):
         assert cursor.forward() == 0
 
 
-class TestBuildEmployee(object):
+class TestBuildEmployeeCompany(object):
 
     @classmethod
     def setup_class(cls):
@@ -639,7 +840,7 @@ class TestBuildEmployee(object):
         cls.EMPLOYEE_ID = '1122452335'
         cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
 
-        cls.build_employee = BuildEmployee(
+        cls.build_employee = BuildEmployeeCompany(
             cls.EMPLOYEE_ID, 
             cls.EMPLOYEE_EMAIL, 
             cls.COMPANY_NAME
@@ -697,7 +898,7 @@ class TestProjectNode(object):
         assert cursor.forward() == 0
 
 
-class TestEmployeeInvolvement(object):
+class TestBuildEmployeeInvolvement(object):
 
     @classmethod
     def setup_class(cls):
@@ -705,21 +906,21 @@ class TestEmployeeInvolvement(object):
         cls.CLIENT_ID = 'somecliid'
         cls.CLIENT_NAME = 'some-client-name-aka-company-name'
 
-        cls.build_client = BuildClient(cls.CLIENT_ID, cls.CLIENT_NAME)
+        cls.build_client = BuildClientOnboard(cls.CLIENT_ID, cls.CLIENT_NAME)
         cls.build_client.init_rels()
 
         cls.COMPANY_NAME = 'a-company-like-citi-bank'
         cls.EMPLOYEE_ID = '1122452335'
         cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
 
-        cls.build_employee = BuildEmployee(
+        cls.build_employee = BuildEmployeeCompany(
             cls.EMPLOYEE_ID, 
             cls.EMPLOYEE_EMAIL, 
             cls.COMPANY_NAME
         )
         cls.build_employee.init_rels()
 
-        cls.employee_involve = EmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
+        cls.employee_involve = BuildEmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
         cls.employee_involve.init_rels()
 
     @classmethod
@@ -743,7 +944,7 @@ class TestEmployeeInvolvement(object):
         assert cursor.forward() == 0
 
 
-class TestEmployeeAccess(object):
+class TestUpdateEmployeeAccess(object):
 
     @classmethod
     def setup_class(cls):
@@ -751,32 +952,32 @@ class TestEmployeeAccess(object):
         cls.CLIENT_ID = 'somecliid'
         cls.CLIENT_NAME = 'some-client-name-aka-company-name'
 
-        cls.build_client = BuildClient(cls.CLIENT_ID, cls.CLIENT_NAME)
+        cls.build_client = BuildClientOnboard(cls.CLIENT_ID, cls.CLIENT_NAME)
         cls.build_client.init_rels()
 
-        cls.build_generic = BuildGeneric()
+        cls.build_generic = BuildGenericProcess()
         cls.build_generic.init()
 
-        cls.build_cli_onboard = BuildClientOnboard(cls.CLIENT_ID)
+        cls.build_cli_onboard = BuildOnboardGenericProcess(cls.CLIENT_ID)
         cls.build_cli_onboard.init_rels()
 
         cls.COMPANY_NAME = 'a-company-like-citi-bank'
         cls.EMPLOYEE_ID = '1122452335'
         cls.EMPLOYEE_EMAIL = 'gpwn@fuzz.org'
 
-        cls.build_employee = BuildEmployee(
+        cls.build_employee = BuildEmployeeCompany(
             cls.EMPLOYEE_ID, 
             cls.EMPLOYEE_EMAIL, 
             cls.COMPANY_NAME
         )
         cls.build_employee.init_rels()
 
-        cls.employee_involve = EmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
+        cls.employee_involve = BuildEmployeeInvolvement(cls.EMPLOYEE_ID, cls.CLIENT_ID)
         cls.employee_involve.init_rels()
 
         cls.STEP_ACCESSED = 2
 
-        cls.employee_access = EmployeeAccess(cls.EMPLOYEE_ID)
+        cls.employee_access = UpdateEmployeeAccess(cls.EMPLOYEE_ID)
         cls.employee_access.update_step_access(cls.CLIENT_ID, cls.STEP_ACCESSED)
 
     @classmethod
@@ -907,14 +1108,14 @@ class TestDatabaseNode(object):
         assert cursor.forward() == 0
 
 
-class TestCrmDatabase(object):
+class TestBuildCrmDatabase(object):
 
     @classmethod
     def setup_class(cls):
 
         cls.APP_NAME = 'some crm app'
         cls.TYPE = 'sql'
-        cls.crm_db = CrmDatabase(cls.APP_NAME, cls.TYPE)
+        cls.crm_db = BuildCrmDatabase(cls.APP_NAME, cls.TYPE)
         cls.crm_db.build()
 
     @classmethod
@@ -937,14 +1138,14 @@ class TestCrmDatabase(object):
         assert cursor.forward() == 0
 
 
-class TestErpDatabase(object):
+class TestBuildErpDatabase(object):
 
     @classmethod
     def setup_class(cls):
 
         cls.APP_NAME = 'some erp app'
         cls.TYPE = 'graphdb'
-        cls.erp_db = ErpDatabase(cls.APP_NAME, cls.TYPE)
+        cls.erp_db = BuildErpDatabase(cls.APP_NAME, cls.TYPE)
         cls.erp_db.build()
 
     @classmethod
@@ -967,14 +1168,14 @@ class TestErpDatabase(object):
         assert cursor.forward() == 0
 
 
-class TestComplianceDatabase(object):
+class TestBuildComplianceDatabase(object):
 
     @classmethod
     def setup_class(cls):
 
         cls.APP_NAME = 'some compliance app'
         cls.TYPE = 'mysql'
-        cls.compliance_db = ComplianceDatabase(cls.APP_NAME, cls.TYPE)
+        cls.compliance_db = BuildComplianceDatabase(cls.APP_NAME, cls.TYPE)
         cls.compliance_db.build()
 
     @classmethod
