@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, render_template
 from extensions import db
 from models import build_model, build_clients
-from models import Client
+from models import Client, Onboard
 
 
 bp = Blueprint('bp', __name__)
@@ -24,7 +24,7 @@ def gap_analysis():
 
 @bp.route('/kpi')
 def kpi():
-    return render_template('kpi.html')
+    return render_template('kpi.html', average_ttc = Onboard.compute_average())
 
 @bp.route('/client_metric')
 def client_metric():

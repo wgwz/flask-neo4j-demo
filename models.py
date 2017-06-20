@@ -1,5 +1,3 @@
-# TODO: 4. test average time to completion function, dependent on 3
-# TODO: 5. visualize the average time to completion results 
 import arrow
 
 from extensions import db
@@ -320,6 +318,7 @@ class UpdateClientOnboard(object):
     '''logic for updating the onboard node and structure in vicinity'''
 
     def __init__(self, company_id):
+        self.company_id = company_id
         self.onboard = list(Client.select(db.graph).where(
             company_id=company_id
         ).first().has_onboard)[0]
@@ -334,10 +333,11 @@ class UpdateClientOnboard(object):
 
     def completed_dependencies(self, step_number):
         cursor = db.graph.run((
-            "match (s:GenericStep)-[r:DEPENDS_ON*]->(ds)"
-            "match (ds)<-[:HAS_COMPLETED]-(o) "
+            "match (s:GenericStep)-[r:DEPENDS_ON*]->(ds) "
+            "match (ds)<-[:HAS_COMPLETED]-()<-[:HAS_ONBOARD]-(c) "
             "where s.step_number=%d "
-            "return ds order by ds.step_number" % step_number
+            "AND c.company_id='%s' "
+            "return ds order by ds.step_number" % (step_number, self.company_id)
         ))
         return [result['ds']['step_number'] for result in cursor]
 
@@ -452,6 +452,10 @@ class BuildEmployeeCompany(object):
         db.graph.push(self.employee)
         return 'initial employee structure built'
 
+    def init(self):
+        self.init_rels()
+        return 'built employee company structure'
+
 
 class Project(db.Model):
 
@@ -485,6 +489,10 @@ class BuildEmployeeInvolvement(object):
         db.graph.push(self.employee)
         db.graph.push(self.project)
         return 'added employee involvement'
+
+    def init(self):
+        self.init_rels()
+        return 'built employee involvement structure'
 
 
 class UpdateEmployeeAccess(object):
@@ -618,40 +626,51 @@ class EmployeeAppAccess(object):
 
 
 def build_model():
-    
-    client_1 = BuildClientOnboard('company_id_1', 'company_name_1')
-    client_1.init_rels()
-    
-    client_2 = BuildClientOnboard('company_id_2', 'company_name_2')
-    client_2.init_rels()
-   
+    '''builds a sample data set using the model'''
+
+    COMPANY_ID_1 = 'company_id_1'
+    COMPANY_ID_2 = 'company_id_2'
+
+    # build the generic onboard process in the database
     generic = BuildGenericProcess()
     generic.init()
 
-    cli_1_onboard = BuildOnboardGenericProcess('company_id_1')
-    cli_1_onboard.init_rels()
+    # initialize a new client by creating client and onboard structure
+    client_1 = BuildClientOnboard(COMPANY_ID_1, 'company_name_1')
+    client_1.init()
     
-    cli_2_onboard = BuildOnboardGenericProcess('company_id_2')
-    cli_2_onboard.init_rels()
+    client_2 = BuildClientOnboard(COMPANY_ID_2, 'company_name_2')
+    client_2.init()
 
+    # initialize the structures for a clients onboard and the generic process
+    cli_1_onboard = BuildOnboardGenericProcess(COMPANY_ID_1)
+    cli_1_onboard.init()
+    
+    cli_2_onboard = BuildOnboardGenericProcess(COMPANY_ID_2)
+    cli_2_onboard.init()
+
+    # initialize some employees
     employee_1 = BuildEmployeeCompany('employee_id_1', 'employee_email_1', 'Citi')
+    employee_1.init()
+
     employee_2 = BuildEmployeeCompany('employee_id_2', 'employee_email_2', 'Citi')
-    
-    employee_1.init_rels()
-    employee_2.init_rels()
+    employee_2.init()
 
-    empl_cust_involve_1 = BuildEmployeeInvolvement('employee_id_1', 'company_id_1')
-    empl_cust_involve_2 = BuildEmployeeInvolvement('employee_id_2', 'company_id_2')
-    
-    empl_cust_involve_1.init_rels()
-    empl_cust_involve_2.init_rels()
+    # mark employees as involved in work with particular clients
+    empl_cust_involve_1 = BuildEmployeeInvolvement('employee_id_1', COMPANY_ID_1)
+    empl_cust_involve_1.init()
 
+    empl_cust_involve_2 = BuildEmployeeInvolvement('employee_id_2', COMPANY_ID_2)
+    empl_cust_involve_2.init()
+
+    # track which steps have been accessed by a given employee
     customer_access_1 = UpdateEmployeeAccess('employee_id_1')
+    customer_access_1.update_step_access(COMPANY_ID_1, 4)
+
     customer_access_2 = UpdateEmployeeAccess('employee_id_2')
+    customer_access_2.update_step_access(COMPANY_ID_2, 2)
 
-    customer_access_1.update_step_access('company_id_1', 4)
-    customer_access_2.update_step_access('company_id_2', 2)
-
+    # create some databases for the company
     crm = BuildCrmDatabase('Salesforce', 'cloud')
     crm.build()
 
@@ -661,6 +680,7 @@ def build_model():
     compliance = BuildComplianceDatabase('Actimize', 'SqlServer1')
     compliance.build()
 
+    # build some structure to show which employees access which databases
     app_access_1 = EmployeeAppAccess('Crm', 'employee_id_1')
     app_access_1.build()
     
@@ -670,6 +690,13 @@ def build_model():
     app_access_3 = EmployeeAppAccess('Compliance', 'employee_id_2')
     app_access_3.build()
 
+    update_cli_1 = UpdateClientOnboard(COMPANY_ID_1)
+    for i in range(len(GenericStep.all())):
+        update_cli_1.aware_mark_step_complete(i)
+
+    update_cli_2 = UpdateClientOnboard(COMPANY_ID_2)
+    update_cli_2.aware_mark_step_complete(3)
+    
     return 'model built'
 
 def build_clients():

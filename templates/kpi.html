@@ -1,1 +1,20 @@
 {% extends 'basis.html' %}
+
+{% block content %}
+<h1>Average Onboard</h1>
+  <table class='table table-striped table-bordered'>
+      <caption>Average Time to Completion of the Onboard</caption>
+      <thead>
+          <tr>
+              <th>Average Time to Completion</th>
+              <th>Time (Seconds)</th>
+          </tr>
+      </thead>
+      <tbody>
+          <tr>
+              <td></td>
+              <td>{{ average_ttc }}</td>
+          </tr>
+      </tbody>
+  </table>
+{% endblock %}

@@ -768,6 +768,37 @@ class TestUpdateClientOnboard(object):
         assert cursor.current()['completed'] == COMPLETION_STATUS
         assert cursor.forward() == 0
 
+    def test_that_onboard_gets_invalidated_if_a_step_is_completed_before_a_dependency_with_aware_mark_step(self, db):
+
+        db.graph.run((
+            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
+            "match (o)-[i:INVALID]->() "
+            "set o.valid_onboard=true "
+            "delete c, i"
+        ))
+        db.graph.pull(self.update_onboard.onboard)
+
+        NUM_INVALID = 2
+        NUM_COMPLETE = 3
+        VALID = False
+
+        self.update_onboard.aware_mark_step_complete(3)
+        self.update_onboard.aware_mark_step_complete(4)
+        self.update_onboard.aware_mark_step_complete(1)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[r:HAS_COMPLETED|INVALID]->() "
+            "return o.valid_onboard as valid, type(r) as type, count(r) as count order by type"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == VALID
+        assert cursor.current()['count'] == NUM_COMPLETE
+        assert cursor.forward() == 1
+        assert cursor.current()['valid'] == VALID
+        assert cursor.current()['count'] == NUM_INVALID
+        assert cursor.forward() == 0
+
 
 class TestCompanyNode(object):
 
