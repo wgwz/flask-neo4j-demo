@@ -16,7 +16,9 @@ from extensions import db as _db
 # for the future this could be modularized further
 from models import Client, Onboard, BuildClientOnboard
 from models import GenericProcess, GenericStep, GenericDocument, BuildGenericProcess
-from models import BuildOnboardGenericProcess, UpdateClientOnboard
+from models import BuildOnboardGenericProcess
+from models import Activity, Action, BuildOnboardActivity
+from models import UpdateClientOnboard
 from models import Company, Employee, BuildEmployeeCompany
 from models import Project, BuildEmployeeInvolvement, UpdateEmployeeAccess
 from models import Application, Database
@@ -153,6 +155,26 @@ class TestOnboard(object):
         average_ttc = Onboard.compute_average()
 
         assert average_ttc == AVERAGE_TTC
+
+    def test_onboard_has_activity_rel(self, db):
+        activity = Activity.create()
+        onboard = Onboard.create()
+
+        onboard.has_activity.add(activity)
+
+        db.graph.push(onboard)
+
+        cursor = db.graph.run((
+            "match (o:Onboard)-[:HAS_ACTIVITY]->(a) "
+            "return o, a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['o'] is not None
+        assert cursor.current()['a'] is not None
+        assert cursor.forward() == 0
+
+        db.graph.run("match (n) detach delete n")
 
 
 
@@ -437,6 +459,112 @@ class TestBuildOnboardGenericProcess(object):
 
         assert len([_ for _ in cursor]) == len(self.generic.document_metadata)
         assert cursor.current()['d'].has_label('GenericDocument')
+
+
+class TestActivityNode(object):
+
+    @classmethod
+    def setup_class(cls):
+        Onboard.create()
+        cls.activity = Activity.create()
+        cls.action = Action.create()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Activity), (o:Onboard), (ac:Action) "
+            "detach delete a, o, ac"
+        ))
+
+    def test_activity_node(self, db):
+        cursor = db.graph.run((
+            "match (a:Activity) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a'] is not None
+        assert cursor.forward() == 0
+
+    def test_first_action_rel(self, db):
+        self.activity.first_action.add(self.action)
+        db.graph.push(self.activity)
+
+        cursor = db.graph.run((
+            "match (:Activity)-[:FIRST_ACTION]->(ac) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 0
+
+
+class TestActionNode(object):
+
+    @classmethod
+    def setup_class(cls):
+        cls.action = Action.create()
+        cls.new_action = Action.create()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (a:Activity), (o:Onboard) "
+            "detach delete a, o"
+        ))
+
+    def test_action_node(self, db):
+        cursor = db.graph.run((
+            "match (ac:Action) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 1
+        assert cursor.forward() == 0
+
+    def test_next_action_rel(self, db):
+        self.action.next_action.add(self.new_action)
+        db.graph.push(self.action)
+
+        cursor = db.graph.run((
+            "match (:Action)-[:NEXT_ACTION]->(ac) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 0
+
+
+class TestBuildOnboardActivity(object):
+
+    @classmethod
+    def setup_class(cls):
+        cls.CID = 'cid'
+        cls.client = BuildClientOnboard(cls.CID, 'cname')
+        cls.client.init()
+        cls.onboard_activity = BuildOnboardActivity(cls.CID)
+        cls.onboard_activity.init()
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (o:Onboard), (c:Client), (a:Activity) "
+            "detach delete o, c, a"
+        ))
+
+    def test_onboard_activity_basic_structure_traversal(self, db):
+        cursor = db.graph.run((
+            "match (:Client)-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->(a) "
+            "return a"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['a'] is not None
+        assert cursor.forward() == 0
 
 
 class TestUpdateClientOnboard(object):

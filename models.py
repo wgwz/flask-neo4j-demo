@@ -67,6 +67,7 @@ class Onboard(db.Model):
     must_follow = db.RelatedTo('GenericProcess')
     missing_document = db.RelatedTo('GenericDocument')
     submitted_document = db.RelatedTo('GenericDocument')
+    has_activity = db.RelatedTo('Activity')
 
     @staticmethod
     def create():
@@ -106,7 +107,6 @@ class BuildClientOnboard(object):
     def init(self):
         self.init_rels()
         return 'initial client structure built'
-
 
 class GenericProcess(db.Model):
 
@@ -313,6 +313,44 @@ class BuildOnboardGenericProcess(object):
         self.init_rels()
         return 'onboarding structure added to client'
 
+
+class Activity(db.Model):
+
+    first_action = db.RelatedTo('Action')
+
+    @staticmethod
+    def create():
+        activity = Activity()
+        db.graph.create(activity)
+        return activity
+
+
+class Action(db.Model):
+
+    next_action = db.RelatedTo('Action')
+
+    @staticmethod
+    def create():
+        action = Action()
+        db.graph.create(action)
+        return action
+
+class BuildOnboardActivity(object):
+
+    def __init__(self, company_id):
+        self.onboard = list(Client.select(db.graph).where(
+            company_id=company_id
+        ).first().has_onboard)[0]
+        self.activity = Activity.create()
+
+    def init_activity_rels(self):
+        self.onboard.has_activity.add(self.activity)
+        db.graph.push(self.onboard)
+        return 'built onboard has activity structure'
+
+    def init(self):
+        self.init_activity_rels()
+        return 'built onboard activity structure'
 
 class UpdateClientOnboard(object):
     '''logic for updating the onboard node and structure in vicinity'''
