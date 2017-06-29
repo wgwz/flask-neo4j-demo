@@ -153,6 +153,10 @@ class GenericStep(db.Model):
     def all():
         return [_ for _ in GenericStep.select(db.graph)]
 
+    @staticmethod
+    def get_by_step_number(step_number):
+        return GenericStep.select(db.graph).where(step_number=step_number).first()
+
 
 class GenericDocument(db.Model):
 
@@ -316,7 +320,9 @@ class BuildOnboardGenericProcess(object):
 
 class Activity(db.Model):
 
+    action_taken = db.RelatedTo('Action')
     first_action = db.RelatedTo('Action')
+    last_action = db.RelatedTo('Action')
 
     @staticmethod
     def create():
@@ -327,13 +333,25 @@ class Activity(db.Model):
 
 class Action(db.Model):
 
-    next_action = db.RelatedTo('Action')
+    taken_at = db.Property()
+
+    has_completed = db.RelatedTo('GenericStep')
+    action_taken = db.RelatedTo('Action') 
 
     @staticmethod
     def create():
         action = Action()
+        a = arrow.utcnow()
+        action.taken_at = a.timestamp
         db.graph.create(action)
         return action
+
+    def add_has_completed_rel(self, step_number):
+        step = GenericStep.get_by_step_number(step_number)
+        self.has_completed.add(step)
+        db.graph.push(self)
+        return self
+
 
 class BuildOnboardActivity(object):
 
@@ -351,6 +369,74 @@ class BuildOnboardActivity(object):
     def init(self):
         self.init_activity_rels()
         return 'built onboard activity structure'
+
+
+class BuildAction(object):
+
+    def __init__(self, company_id):
+        self.company_id = company_id
+        self.onboard = list(Client.select(db.graph).where(
+            company_id=company_id
+        ).first().has_onboard)[0]
+        self.activity = [_ for _ in self.onboard.has_activity][0]
+        self.actions = None
+
+    def _update_actions(self):
+        cursor = db.graph.run((
+            "match (:Activity)-[:ACTION_TAKEN*]->(action) "
+            "return action"
+        ))
+        self.actions = [_ for _ in cursor]
+        return self.actions
+
+    def _is_first_action(self):
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->()-[:ACTION_TAKEN]->(action) "
+            "return action" % self.company_id
+        ))
+        return not cursor.forward()
+
+    def _add_first_action(self):
+        action = Action.create()
+        db.graph.push(action)
+        self.activity.action_taken.add(action)
+        self.activity.first_action.add(action)
+        self.activity.last_action.add(action)
+        db.graph.push(self.activity)
+        return action
+
+    def _get_and_move_last_action(self, new_action):
+
+        last_action = [_ for _ in self.activity.last_action][0]
+
+        last_action.action_taken.add(new_action)
+        self.activity.last_action.remove(last_action)
+        self.activity.last_action.add(new_action)
+
+        db.graph.push(self.activity)
+        db.graph.push(last_action)
+
+        return last_action
+
+    def _add_next_action(self):
+        new_action = Action.create()
+        db.graph.push(new_action)
+        last_action = self._get_and_move_last_action(new_action)
+        db.graph.push(last_action)
+        return new_action
+
+    def _new_action(self):
+        if self._is_first_action():
+            return self._add_first_action()
+        return self._add_next_action()
+
+    def new_action(self, step_number=None):
+        if step_number:
+            action = self._new_action()
+            action.add_has_completed_rel(step_number)
+            return action 
+        return self._new_action()
+
 
 class UpdateClientOnboard(object):
     '''logic for updating the onboard node and structure in vicinity'''

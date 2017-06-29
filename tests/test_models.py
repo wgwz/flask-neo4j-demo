@@ -17,7 +17,7 @@ from extensions import db as _db
 from models import Client, Onboard, BuildClientOnboard
 from models import GenericProcess, GenericStep, GenericDocument, BuildGenericProcess
 from models import BuildOnboardGenericProcess
-from models import Activity, Action, BuildOnboardActivity
+from models import Activity, Action, BuildOnboardActivity, BuildAction
 from models import UpdateClientOnboard
 from models import Company, Employee, BuildEmployeeCompany
 from models import Project, BuildEmployeeInvolvement, UpdateEmployeeAccess
@@ -236,25 +236,28 @@ class TestGenericProcess(object):
 
 class TestGenericStep(object):
 
-    def test_create(self, db):
+    @classmethod
+    def setup_class(cls):
+        cls.NUM_PROPERTIES = 3
+        cls.TASK_NAME = 'some-step-name'
+        cls.STEP_NUMBER = 201
+        cls.DURATION = 12
+        cls.step = GenericStep.create(cls.TASK_NAME, cls.STEP_NUMBER, cls.DURATION)
 
-        NUM_PROPERTIES = 3
-        TASK_NAME = 'some-step-name'
-        STEP_NUMBER = 201
-        DURATION = 12
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run("match (s:GenericStep) delete s")
 
-        step = GenericStep.create(TASK_NAME, STEP_NUMBER, DURATION)
+    def test_create(self, db):   
 
         cursor = db.graph.run("match (s:GenericStep) return s")
         cursor.forward()
 
         result = cursor.current()['s']
-        assert result['task_name'] == TASK_NAME
-        assert result['step_number'] == STEP_NUMBER
-        assert result['duration'] == DURATION
-        assert len(result.viewkeys()) == NUM_PROPERTIES
-
-        db.graph.run("match (s:GenericStep) delete s")
+        assert result['task_name'] == self.TASK_NAME
+        assert result['step_number'] == self.STEP_NUMBER
+        assert result['duration'] == self.DURATION
+        assert len(result.viewkeys()) == self.NUM_PROPERTIES
 
     def test_all_method_returns_array_of_proper_length(self, db):
 
@@ -263,9 +266,13 @@ class TestGenericStep(object):
 
         all_steps = GenericStep.all()
 
-        assert len(all_steps) == 2
+        assert len(all_steps) == 1 + 2 # 1 from setup, 2 here
 
-        db.graph.run("match (s:GenericStep) delete s")
+    def test_get_by_step_number(self):
+
+        step = GenericStep.get_by_step_number(self.STEP_NUMBER)
+
+        assert step == self.step
 
 
 class TestGenericDocumentNode(object):
@@ -486,12 +493,38 @@ class TestActivityNode(object):
         assert cursor.current()['a'] is not None
         assert cursor.forward() == 0
 
+    def test_action_taken_rel(self, db):
+        self.activity.action_taken.add(self.action)
+        db.graph.push(self.activity)
+
+        cursor = db.graph.run((
+            "match (:Activity)-[:ACTION_TAKEN]->(ac) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 0
+
     def test_first_action_rel(self, db):
         self.activity.first_action.add(self.action)
         db.graph.push(self.activity)
 
         cursor = db.graph.run((
             "match (:Activity)-[:FIRST_ACTION]->(ac) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 0
+
+    def test_last_action_rel(self, db):
+        self.activity.last_action.add(self.action)
+        db.graph.push(self.activity)
+
+        cursor = db.graph.run((
+            "match (:Activity)-[:LAST_ACTION]->(ac) "
             "return ac"
         ))
 
@@ -506,12 +539,17 @@ class TestActionNode(object):
     def setup_class(cls):
         cls.action = Action.create()
         cls.new_action = Action.create()
+        cls.step = GenericStep.create('test_task', 10, 4052)
+
+        cls.STEP_NUMBER = 33
+        cls.DURATION = 12322
+        cls.new_step = GenericStep.create('new_task', cls.STEP_NUMBER, cls.DURATION)
 
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
-            "match (a:Activity), (o:Onboard) "
-            "detach delete a, o"
+            "match (a:Action), (gs:GenericStep) "
+            "detach delete a, gs"
         ))
 
     def test_action_node(self, db):
@@ -522,20 +560,47 @@ class TestActionNode(object):
 
         assert cursor.forward() == 1
         assert cursor.current()['ac'] is not None
+        assert arrow.get(cursor.current()['ac']['taken_at'])
         assert cursor.forward() == 1
         assert cursor.forward() == 0
 
-    def test_next_action_rel(self, db):
-        self.action.next_action.add(self.new_action)
+    def test_action_taken_rel(self, db):
+        self.action.action_taken.add(self.new_action)
         db.graph.push(self.action)
 
         cursor = db.graph.run((
-            "match (:Action)-[:NEXT_ACTION]->(ac) "
+            "match (:Action)-[:ACTION_TAKEN]->(ac) "
             "return ac"
         ))
 
         assert cursor.forward() == 1
         assert cursor.current()['ac'] is not None
+        assert cursor.forward() == 0
+
+    def test_has_completed_rel(self, db):
+        self.action.has_completed.add(self.step)
+        db.graph.push(self.action)
+
+        cursor = db.graph.run((
+            "match (:Action)-[:HAS_COMPLETED]->(step) "
+            "return step"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['step'] is not None
+        assert cursor.forward() == 0
+
+    def test_add_has_completed_rel(self, db):
+        self.action.add_has_completed_rel(self.STEP_NUMBER)
+
+        cursor = db.graph.run((
+            "match (step:GenericStep {step_number: %d}) "
+            "match (step)<-[:HAS_COMPLETED]-(action) "
+            "return action" % self.STEP_NUMBER
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['action'] is not None
         assert cursor.forward() == 0
 
 
@@ -564,6 +629,170 @@ class TestBuildOnboardActivity(object):
 
         assert cursor.forward() == 1
         assert cursor.current()['a'] is not None
+        assert cursor.forward() == 0
+
+
+class TestBuildAction(object):
+
+    @classmethod
+    def setup_class(cls):
+        cls.CID = 'cid'
+        cls.client = BuildClientOnboard(cls.CID, 'cname')
+        cls.client.init()
+        cls.onboard_activity = BuildOnboardActivity(cls.CID)
+        cls.onboard_activity.init()
+        cls.build_action = BuildAction(cls.CID)
+
+        cls.STEP_NUMBER = 9523
+        cls.step = GenericStep.create('taskname', cls.STEP_NUMBER, 1235)
+
+    @classmethod
+    def teardown_class(cls):
+        _db.graph.run((
+            "match (o:Onboard), (c:Client), (a:Activity), (ac:Action), (gs:GenericStep) "
+            "detach delete o, c, a, ac, gs"
+        ))
+
+    def first_action_helper(self):
+        '''check first action structure is in place'''
+        cursor = _db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->(activity) "
+            "match (activity)-[:ACTION_TAKEN]->(action_taken) "
+            "match (activity)-[:FIRST_ACTION]->(first) "
+            "match (activity)-[:LAST_ACTION]->(last) "
+            "return action_taken, first, last" % self.CID
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['action_taken'] is not None
+        assert cursor.current()['first'] is not None
+        assert cursor.current()['last'] is not None
+        assert cursor.forward() == 0
+
+    def check_first_action_not_last_action_helper(self):
+        '''check last action no longer with first action'''
+        cursor = _db.graph.run((
+            "match (:Activity)-[:FIRST_ACTION]->(first) "
+            "match (first)<-[:LAST_ACTION]-(activity) "
+            "return activity"
+        ))
+        assert cursor.forward() == 0
+
+    def clear_action_nodes_and_rels(self):
+        '''clean up action nodes'''
+        cursor = _db.graph.run((
+            "match (:Activity)-[:ACTION_TAKEN*]->(action) "
+            "detach delete action"
+        ))
+        _db.graph.pull(self.build_action.activity)
+        return 'cleaned'
+
+    def test_is_first_action_returns_truthy(self, db):
+        assert self.build_action._is_first_action()
+
+    def test_add_first_action(self, db):
+        self.build_action._add_first_action()
+        self.first_action_helper()
+
+    def test_is_first_action_returns_falsey(self, db):
+        assert not self.build_action._is_first_action()
+
+    def test_get_and_move_last_action(self, db):
+        new_action = Action.create()
+        db.graph.push(new_action)
+        last_action = self.build_action._get_and_move_last_action(new_action)
+        last_action.action_taken.add(new_action)
+        db.graph.push(last_action)
+
+        self.check_first_action_not_last_action_helper()
+
+        # check last action is tied to the new action
+        cursor = db.graph.run((
+            "match (:Activity)-[:FIRST_ACTION]->(first) "
+            "match (first)-[:ACTION_TAKEN]->(last) "
+            "match (last)<-[:LAST_ACTION]-(activity) "
+            "return activity"
+        ))
+        assert cursor.forward() == 1
+        assert cursor.forward() == 0
+
+        self.clear_action_nodes_and_rels()
+
+        self.build_action._add_first_action()
+
+
+    def test__add_next_action(self, db):
+        self.build_action._add_next_action()
+        self.build_action._add_next_action()
+
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->()-[:ACTION_TAKEN*]->(action) "
+            "return action" % self.CID
+        ))
+        results = [_['action'] for _ in cursor]
+        
+        assert len(results) == 3
+        assert all([isinstance(_, Node) for _ in results])
+
+        self.clear_action_nodes_and_rels()
+
+    def test__new_action_properly_builds_first_action(self, db):
+        self.build_action._new_action()
+        self.first_action_helper()
+
+    def test__new_action_properly_builds_more_actions(self, db):
+        self.build_action._new_action()
+        self.build_action._new_action()
+
+        self.check_first_action_not_last_action_helper()
+
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->(activity) "
+            "match (activity)-[:FIRST_ACTION]->(first) "
+            "match (first)-[:ACTION_TAKEN]->(second) "
+            "match (second)-[:ACTION_TAKEN]->(third) "
+            "match (third)<-[:LAST_ACTION]-(_activity) "
+            "return activity, _activity" % self.CID
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['activity'] == cursor.current()['_activity']
+        assert cursor.forward() == 0
+
+        self.clear_action_nodes_and_rels()
+
+    def test_new_action_properly_builds_first_action(self, db):
+        self.build_action.new_action(step_number=self.STEP_NUMBER)
+        self.first_action_helper()
+
+        cursor = db.graph.run((
+            "match (:Activity)-[:FIRST_ACTION]->()-[:HAS_COMPLETED]->(gs) "
+            "return gs"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['gs']['step_number'] == self.STEP_NUMBER
+        assert cursor.forward() == 0
+
+    def test_new_action_properly_builds_more_actions(self, db):
+        self.build_action.new_action()
+        self.build_action.new_action(step_number=self.STEP_NUMBER)
+
+        self.check_first_action_not_last_action_helper()
+
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->(activity) "
+            "match (activity)-[:FIRST_ACTION]->(first) "
+            "match (first)-[:ACTION_TAKEN]->(second) "
+            "match (second)-[:ACTION_TAKEN]->(third) "
+            "match (third)<-[:LAST_ACTION]-(_activity) "
+            "match (third)-[:HAS_COMPLETED]->(gs) "
+            "return activity, _activity, gs" % self.CID
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['activity'] == cursor.current()['_activity']
+        assert cursor.current()['gs']['step_number'] == self.STEP_NUMBER
         assert cursor.forward() == 0
 
 
