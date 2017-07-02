@@ -108,6 +108,7 @@ class BuildClientOnboard(object):
         self.init_rels()
         return 'initial client structure built'
 
+
 class GenericProcess(db.Model):
 
     has_step = db.RelatedTo('GenericStep')
@@ -333,24 +334,56 @@ class Activity(db.Model):
 
 class Action(db.Model):
 
+    number = db.Property()
     taken_at = db.Property()
 
     has_completed = db.RelatedTo('GenericStep')
     action_taken = db.RelatedTo('Action') 
 
     @staticmethod
-    def create():
+    def create(company_id):
         action = Action()
         a = arrow.utcnow()
+        action.number = action.get_num_actions(company_id)
         action.taken_at = a.timestamp
         db.graph.create(action)
         return action
 
-    def add_has_completed_rel(self, step_number):
-        step = GenericStep.get_by_step_number(step_number)
-        self.has_completed.add(step)
-        db.graph.push(self)
-        return self
+    def _is_client_onboard_structure_built(self, company_id):
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[r:HAS_ONBOARD]->()"
+            "return r" % company_id
+        ))
+        return cursor.forward()
+
+    def _is_onboard_activity_structure_built(self, company_id):
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[r:HAS_ACTIVITY]->()"
+            "return r" % company_id
+        ))
+        return cursor.forward()
+
+    def _structure_is_built(self, company_id):
+        if self._is_client_onboard_structure_built(company_id) and self._is_onboard_activity_structure_built(company_id):
+            return True
+        return False
+
+    def get_num_actions(self, company_id):
+        if self._structure_is_built(company_id):
+            cursor = db.graph.run((
+                "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->()-[:ACTION_TAKEN*]->(a) "
+                "return count(a) as num_actions" % company_id
+            ))
+            return cursor.next()['num_actions']
+        return None
+
+    def add_has_completed_rel(self, company_id, step_number):
+        if self._structure_is_built(company_id):
+            step = GenericStep.get_by_step_number(step_number)
+            self.has_completed.add(step)
+            db.graph.push(self)
+            return self
+        raise LookupError('required graph structure missing')
 
 
 class BuildOnboardActivity(object):
@@ -397,7 +430,7 @@ class BuildAction(object):
         return not cursor.forward()
 
     def _add_first_action(self):
-        action = Action.create()
+        action = Action.create(self.company_id)
         db.graph.push(action)
         self.activity.action_taken.add(action)
         self.activity.first_action.add(action)
@@ -419,7 +452,7 @@ class BuildAction(object):
         return last_action
 
     def _add_next_action(self):
-        new_action = Action.create()
+        new_action = Action.create(self.company_id)
         db.graph.push(new_action)
         last_action = self._get_and_move_last_action(new_action)
         db.graph.push(last_action)
@@ -434,16 +467,13 @@ class BuildAction(object):
         '''add a new action node optionally marking a step as completed'''
         if step_number is not None:
             action = self._new_action()
-            action.add_has_completed_rel(step_number)
+            action.add_has_completed_rel(self.company_id, step_number)
             return action 
         return self._new_action()
 
 
 class UpdateBuildAction(object):
-    # TODO: (first) organize methods to be public and private
-    # TODO: (next) redo step mark completion methods to be off of Action nodes
-    # TODO: reconsider all methods of BuildAction and UpdateBuildAction
-    # is the crud logic consistently separated?
+    
     def __init__(self, company_id):
         self.company_id = company_id
         self.onboard = list(Client.select(db.graph).where(
@@ -452,7 +482,7 @@ class UpdateBuildAction(object):
         self.activity = [_ for _ in self.onboard.has_activity][0]
         self.actions = None
 
-    def num_dependencies(self, step_number):
+    def _num_dependencies(self, step_number):
         cursor = db.graph.run((
             "match (s:GenericStep)-[:DEPENDS_ON*]->(ds) "
             "where s.step_number=%d "
@@ -460,7 +490,7 @@ class UpdateBuildAction(object):
         ))
         return cursor.next()['num_depends']
 
-    def completed_dependencies(self, step_number):
+    def _completed_dependencies(self, step_number):
         cursor = db.graph.run((
             "match (s:GenericStep {step_number: %d})-[:DEPENDS_ON*]->(ds) "
             "match (ds)<-[:HAS_COMPLETED]-(action) "
@@ -470,27 +500,27 @@ class UpdateBuildAction(object):
         ))
         return [result['ds']['step_number'] for result in cursor]
 
-    def depends_satisfied(self, step_number):
-        number_of_depends = self.num_dependencies(step_number)
-        completed_depends = self.completed_dependencies(step_number)
+    def _depends_satisfied(self, step_number):
+        number_of_depends = self._num_dependencies(step_number)
+        completed_depends = self._completed_dependencies(step_number)
         if number_of_depends == len(completed_depends):
             return True
         return False
 
-    def mark_onboard_complete(self):
+    def _mark_onboard_complete(self):
         a = arrow.utcnow()
         self.onboard.completed = True
         self.onboard.time_completed = a.timestamp
         db.graph.push(self.onboard)
         return 'onboard process marked complete'
 
-    def step_aware_mark_onboard_complete(self):
+    def _step_aware_mark_onboard_complete(self):
         '''will mark the onboard process as complete if all the generic steps have been completed'''
         if len(list(self.onboard.has_completed)) == len(GenericStep.all()):
-            self.mark_onboard_complete()
+            self._mark_onboard_complete()
         return 'onboard process not complete'
 
-    def mark_step_complete(self, step_number):
+    def _mark_step_complete(self, step_number):
         step = GenericStep.select(db.graph).where(
             step_number=step_number
         ).first()
@@ -498,7 +528,7 @@ class UpdateBuildAction(object):
         db.graph.push(self.onboard)
         return "marked step %d as complete" % step_number
 
-    def mark_step_invalid(self, step_number):
+    def _mark_step_invalid(self, step_number):
         step = GenericStep.select(db.graph).where(
             step_number=step_number
         ).first()
@@ -507,17 +537,17 @@ class UpdateBuildAction(object):
         db.graph.push(self.onboard)
         return "marked step %d as invalid" % step_number
 
-    def dependency_aware_mark_step_complete(self, step_number):
-        if self.depends_satisfied(step_number):
-            self.mark_step_complete(step_number)
+    def _dependency_aware_mark_step_complete(self, step_number):
+        if self._depends_satisfied(step_number):
+            self._mark_step_complete(step_number)
             return "step marked as valid and complete"
-        self.mark_step_complete(step_number)
-        self.mark_step_invalid(step_number)
+        self._mark_step_complete(step_number)
+        self._mark_step_invalid(step_number)
         return "step marked as invalid and complete"
 
     def aware_mark_step_complete(self, step_number):
-        self.dependency_aware_mark_step_complete(step_number)
-        self.step_aware_mark_onboard_complete()
+        self._dependency_aware_mark_step_complete(step_number)
+        self._step_aware_mark_onboard_complete()
         return "recorded action for step %d and appropriately adjusted onboard activity" % step_number
 
 

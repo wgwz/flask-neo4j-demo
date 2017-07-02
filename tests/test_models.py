@@ -3,6 +3,7 @@
 # the primary reason for this is that
 # in production direct cypher queries are likely to be faster
 
+import pytest
 from py2neo.types import Node
 import arrow 
 from mock import patch, MagicMock
@@ -425,7 +426,7 @@ class TestBuildOnboardGenericProcess(object):
         cls.COMPANY_NAME = 'some-comp-name'
 
         cls.client = BuildClientOnboard(cls.COMPANY_ID, cls.COMPANY_NAME)
-        cls.client.init_rels()
+        cls.client.init()
         
         cls.generic = BuildGenericProcess()
         cls.generic.init()
@@ -473,9 +474,11 @@ class TestActivityNode(object):
 
     @classmethod
     def setup_class(cls):
+        cls.CID = 'companyid'
+
         Onboard.create()
         cls.activity = Activity.create()
-        cls.action = Action.create()
+        cls.action = Action.create(cls.CID)
 
     @classmethod
     def teardown_class(cls):
@@ -538,8 +541,11 @@ class TestActionNode(object):
 
     @classmethod
     def setup_class(cls):
-        cls.action = Action.create()
-        cls.new_action = Action.create()
+        cls.CID = 'companyid'
+        cls.CNAME = 'comp-name'
+
+        cls.action = Action.create(cls.CID)
+        cls.new_action = Action.create(cls.CID)
         cls.step = GenericStep.create('test_task', 10, 4052)
 
         cls.STEP_NUMBER = 33
@@ -549,8 +555,8 @@ class TestActionNode(object):
     @classmethod
     def teardown_class(cls):
         _db.graph.run((
-            "match (a:Action), (gs:GenericStep) "
-            "detach delete a, gs"
+            "match (a:Action), (gs:GenericStep), (c:Client), (o:Onboard), (ac:Activity) "
+            "detach delete a, gs, c, o, ac"
         ))
 
     def test_action_node(self, db):
@@ -564,6 +570,28 @@ class TestActionNode(object):
         assert arrow.get(cursor.current()['ac']['taken_at'])
         assert cursor.forward() == 1
         assert cursor.forward() == 0
+
+    def test_action_node_timestamps_load_with_arrow(self, db):
+        cursor = db.graph.run((
+            "match (ac:Action) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert arrow.get(cursor.current()['ac']['taken_at'])
+        assert cursor.forward() == 1
+        assert arrow.get(cursor.current()['ac']['taken_at'])
+        assert cursor.forward() == 0
+
+    def test_that_action_node_number_defaults_to_null_with_no_structure(self, db):
+        cursor = db.graph.run((
+            "match (ac:Action) "
+            "return ac"
+        ))
+        assert cursor.forward() == 1
+        assert cursor.current()['ac']['number'] is None
+        assert cursor.forward() == 1
+        assert cursor.current()['ac']['number'] is None
 
     def test_action_taken_rel(self, db):
         self.action.action_taken.add(self.new_action)
@@ -591,8 +619,19 @@ class TestActionNode(object):
         assert cursor.current()['step'] is not None
         assert cursor.forward() == 0
 
-    def test_add_has_completed_rel(self, db):
-        self.action.add_has_completed_rel(self.STEP_NUMBER)
+    def test_add_has_completed_rel_without_supporting_structure(self, db):
+        with pytest.raises(LookupError) as exc_info:
+            self.action.add_has_completed_rel(self.CID, self.STEP_NUMBER)
+    
+        assert exc_info.match('required graph structure missing')        
+
+    def test_add_has_completed_rel_with_supporting_structure(self, db):
+        build_client = BuildClientOnboard(self.CID, self.CNAME)
+        build_client.init()
+        build_activity = BuildOnboardActivity(self.CID)
+        build_activity.init()
+
+        self.action.add_has_completed_rel(self.CID, self.STEP_NUMBER)
 
         cursor = db.graph.run((
             "match (step:GenericStep {step_number: %d}) "
@@ -602,6 +641,73 @@ class TestActionNode(object):
 
         assert cursor.forward() == 1
         assert cursor.current()['action'] is not None
+        assert cursor.forward() == 0
+
+        db.graph.run((
+            "match (c:Client), (o:Onboard), (a:Activity) "
+            "detach delete c, o, a"
+        ))
+
+    def test_is_client_onboard_structure_built_is_falsey(self):
+
+        assert not self.action._is_client_onboard_structure_built(self.CID)
+
+    def test_is_onboard_activity_structure_built_is_falsey(self):
+
+        assert not self.action._is_onboard_activity_structure_built(self.CID)
+
+    def test_get_num_actions_with_no_supporting_structure(self, db):
+
+        assert self.action.get_num_actions(self.CID) == None
+
+    def test_is_client_onboard_structure_built_is_truthy(self):
+        build_client = BuildClientOnboard(self.CID, self.CNAME)
+        build_client.init()
+        build_activity = BuildOnboardActivity(self.CID)
+        build_activity.init()
+        build_action = BuildAction(self.CID)
+
+        assert self.action._is_client_onboard_structure_built(self.CID)
+
+    def test_is_onboard_activity_structure_built_is_truthy(self):
+
+        assert self.action._is_onboard_activity_structure_built(self.CID)
+
+    def test_get_num_actions_with_support_structures(self, db):
+        build_action = BuildAction(self.CID)
+        NUM_ACTIONS = 10
+        for i in range(NUM_ACTIONS):
+            build_action.new_action()
+        assert self.action.get_num_actions(self.CID) == NUM_ACTIONS
+
+    def test_action_node_number_with_supporting_structure(self, db):
+        db.graph.run((
+            "match (a:Action) "
+            "detach delete a"
+        ))
+
+        build_client = BuildClientOnboard('new', 'newcname')
+        build_client.init()
+
+        build_activity = BuildOnboardActivity('new')
+        build_activity.init()
+
+        build_action = BuildAction('new')
+        build_action.new_action()
+        build_action.new_action()
+        build_action.new_action()
+
+        cursor = db.graph.run((
+            "match (ac:Action) "
+            "return ac"
+        ))
+
+        assert cursor.forward() == 1
+        assert cursor.current()['ac']['number'] == 0
+        assert cursor.forward() == 1
+        assert cursor.current()['ac']['number'] == 1
+        assert cursor.forward() == 1
+        assert cursor.current()['ac']['number'] == 2
         assert cursor.forward() == 0
 
 
@@ -699,7 +805,7 @@ class TestBuildAction(object):
         assert not self.build_action._is_first_action()
 
     def test_get_and_move_last_action(self, db):
-        new_action = Action.create()
+        new_action = Action.create(self.CID)
         db.graph.push(new_action)
         last_action = self.build_action._get_and_move_last_action(new_action)
         last_action.action_taken.add(new_action)
@@ -720,7 +826,6 @@ class TestBuildAction(object):
         self.clear_action_nodes_and_rels()
 
         self.build_action._add_first_action()
-
 
     def test__add_next_action(self, db):
         self.build_action._add_next_action()
@@ -848,15 +953,15 @@ class TestUpdateBuildAction(object):
     def test_each_step_has_the_correct_number_of_dependencies(self):
 
         for i, num_depends in zip(range(5), self.NUM_DEPENDS_MAP):
-            assert self.update_action.num_dependencies(i) == num_depends
+            assert self.update_action._num_dependencies(i) == num_depends
 
     def test_that_first_step_is_completed_dependency_for_the_fourth_step(self):
 
-        assert 0 in self.update_action.completed_dependencies(3)
+        assert 0 in self.update_action._completed_dependencies(3)
 
     def test_that_dependencies_are_not_satisfied_for_the_fourth_step(self):
 
-        assert not self.update_action.depends_satisfied(3)
+        assert not self.update_action._depends_satisfied(3)
 
     def test_that_dependencies_are_satisfied_for_the_fourth_step(self):
 
@@ -864,24 +969,24 @@ class TestUpdateBuildAction(object):
         self.build_action.new_action(step_number=1)
         self.build_action.new_action(step_number=2)
 
-        assert self.update_action.depends_satisfied(3)
+        assert self.update_action._depends_satisfied(3)
 
     def test_that_dependencies_are_not_satisfied_for_the_last_step(self):
 
-        assert not self.update_action.depends_satisfied(4)
+        assert not self.update_action._depends_satisfied(4)
 
     def test_that_dependencies_are_satisfied_for_the_last_step(self):
 
         self.build_action.new_action(step_number=3)
 
-        assert self.update_action.depends_satisfied(4)
+        assert self.update_action._depends_satisfied(4)
 
     def test_marking_a_step_as_invalid(self, db):
 
         STEP = 3
         VALID = False
 
-        self.update_action.mark_step_invalid(STEP)
+        self.update_action._mark_step_invalid(STEP)
 
         cursor = db.graph.run((
             "match (o:Onboard)-[:INVALID]->(gs) "
@@ -895,17 +1000,17 @@ class TestUpdateBuildAction(object):
 
     def test_that_a_step_with_no_dependencies_gets_marked_correctly_with_aware_step_completion(self, db):
         db.graph.run((
-            "match (o:Onboard)-[c:HAS_COMPLETED]->() "
-            "match (o)-[i:INVALID]->() "
+            "match (o:Onboard)-[i:INVALID]->() "
             "set o.valid_onboard=true "
-            "delete c, i"
+            "delete i"
         ))
         db.graph.pull(self.update_action.onboard)
+        assert self.update_action.onboard.valid_onboard # make sure property change is available
 
         num_steps = 3
 
         for i in range(num_steps):
-            self.update_action.dependency_aware_mark_step_complete(i)
+            self.update_action._dependency_aware_mark_step_complete(i)
 
         cursor = db.graph.run((
             "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
@@ -929,7 +1034,7 @@ class TestUpdateBuildAction(object):
         num_steps = 2
 
         for i in range(num_steps):
-            self.update_action.dependency_aware_mark_step_complete(i + 3)
+            self.update_action._dependency_aware_mark_step_complete(i + 3)
 
         cursor = db.graph.run((
             "match (o:Onboard)-[:HAS_COMPLETED]->(gs) "
@@ -955,14 +1060,17 @@ class TestUpdateBuildAction(object):
         VALID = False
 
         db.graph.run((
-            "match (:Onboard)-[c:HAS_COMPLETED]->() "
+            "match (:Action)-[c:HAS_COMPLETED]->() "
             "delete c"
         ))
-        db.graph.pull(self.update_onboard.onboard)
+        db.graph.pull(self.update_action.onboard)
+        assert len([_ for _ in self.update_action.onboard.has_completed]) == 0
 
-        self.update_action.dependency_aware_mark_step_complete(3)
-        self.update_action.dependency_aware_mark_step_complete(4)
-        self.update_action.dependency_aware_mark_step_complete(1)
+        assert False
+
+        self.update_action._dependency_aware_mark_step_complete(3)
+        self.update_action._dependency_aware_mark_step_complete(4)
+        self.update_action._dependency_aware_mark_step_complete(1)
 
         cursor = db.graph.run((
             "match (o:Onboard)-[r:HAS_COMPLETED|INVALID]->() "
@@ -977,34 +1085,11 @@ class TestUpdateBuildAction(object):
         assert cursor.current()['count'] == NUM_INVALID
         assert cursor.forward() == 0
 
-    def test_that_document_can_be_submitted(self, db):
-
-        self.update_onboard.submit_document(self.DOCUMENT_ID_TO_SUBMIT)
-
-        cursor = db.graph.run((
-            "match (:Onboard)-[:SUBMITTED_DOCUMENT]->(d) "
-            "return d"
-        ))
-
-        assert cursor.forward() == 1
-        assert cursor.current()['d']['document_id'] == self.DOCUMENT_ID_TO_SUBMIT
-        assert cursor.forward() == 0
-
-    def test_that_is_not_marked_as_missing_when_submitted(self, db):
-
-        cursor = db.graph.run((
-            "match (:Onboard)-[:MISSING_DOCUMENT]->(d) "
-            "where d.document_id=%d "
-            "return d" % self.DOCUMENT_ID_TO_SUBMIT
-        ))
-
-        assert cursor.forward() == 0
-
     def test_mark_onboard_as_completed(self, db):
 
         COMPLETION_STATUS = True
 
-        self.update_onboard.mark_onboard_complete()
+        self.update_action._mark_onboard_complete()
 
         cursor = db.graph.run((
             "match (o:Onboard) "
@@ -1027,14 +1112,14 @@ class TestUpdateBuildAction(object):
             "delete c"
         ))
         # pull down the change for py2neo
-        db.graph.pull(self.update_onboard.onboard) 
+        db.graph.pull(self.update_action.onboard) 
 
         # mark some steps as complete
-        self.update_onboard.mark_step_complete(1)
-        self.update_onboard.mark_step_complete(2)
+        self.update_action._mark_step_complete(1)
+        self.update_action._mark_step_complete(2)
 
         # try to mark onboard as complete (should have no effect)
-        self.update_onboard.step_aware_mark_onboard_complete()
+        self.update_action._step_aware_mark_onboard_complete()
 
         cursor = db.graph.run((
             "match (o:Onboard) "
@@ -1056,14 +1141,14 @@ class TestUpdateBuildAction(object):
             "delete c"
         ))
         # pull down the change for py2neo
-        db.graph.pull(self.update_onboard.onboard) 
+        db.graph.pull(self.update_action.onboard) 
 
         # mark all steps as complete
         for i in range(len(GenericStep.all())):
-            self.update_onboard.mark_step_complete(i)
+            self.update_action._mark_step_complete(i)
 
         # mark onboard as complete
-        self.update_onboard.step_aware_mark_onboard_complete()
+        self.update_action._step_aware_mark_onboard_complete()
 
         cursor = db.graph.run((
             "match (o:Onboard) "
@@ -1083,11 +1168,11 @@ class TestUpdateBuildAction(object):
             "set o.completed=false "
             "delete c"
         ))
-        db.graph.pull(self.update_onboard.onboard)
+        db.graph.pull(self.update_action.onboard)
 
-        self.update_onboard.aware_mark_step_complete(1)
-        self.update_onboard.aware_mark_step_complete(2)
-        self.update_onboard.aware_mark_step_complete(4)
+        self.update_action.aware_mark_step_complete(1)
+        self.update_action.aware_mark_step_complete(2)
+        self.update_action.aware_mark_step_complete(4)
 
         cursor = db.graph.run((
             "match (o:Onboard) "
@@ -1107,10 +1192,10 @@ class TestUpdateBuildAction(object):
             "set o.completed=false "
             "delete c"
         ))
-        db.graph.pull(self.update_onboard.onboard)
+        db.graph.pull(self.update_action.onboard)
 
         for i in range(len(GenericStep.all())):
-            self.update_onboard.aware_mark_step_complete(i)
+            self.update_action.aware_mark_step_complete(i)
 
         cursor = db.graph.run((
             "match (o:Onboard) "
@@ -1129,15 +1214,15 @@ class TestUpdateBuildAction(object):
             "set o.valid_onboard=true "
             "delete c, i"
         ))
-        db.graph.pull(self.update_onboard.onboard)
+        db.graph.pull(self.update_action.onboard)
 
         NUM_INVALID = 2
         NUM_COMPLETE = 3
         VALID = False
 
-        self.update_onboard.aware_mark_step_complete(3)
-        self.update_onboard.aware_mark_step_complete(4)
-        self.update_onboard.aware_mark_step_complete(1)
+        self.update_action.aware_mark_step_complete(3)
+        self.update_action.aware_mark_step_complete(4)
+        self.update_action.aware_mark_step_complete(1)
 
         cursor = db.graph.run((
             "match (o:Onboard)-[r:HAS_COMPLETED|INVALID]->() "
