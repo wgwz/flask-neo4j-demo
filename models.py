@@ -386,6 +386,7 @@ class Action(db.Model):
         raise LookupError('required graph structure missing')
 
 
+
 class BuildOnboardActivity(object):
 
     def __init__(self, company_id):
@@ -406,74 +407,6 @@ class BuildOnboardActivity(object):
 
 class BuildAction(object):
 
-    def __init__(self, company_id):
-        self.company_id = company_id
-        self.onboard = list(Client.select(db.graph).where(
-            company_id=company_id
-        ).first().has_onboard)[0]
-        self.activity = [_ for _ in self.onboard.has_activity][0]
-        self.actions = None
-
-    def _update_actions(self):
-        cursor = db.graph.run((
-            "match (:Activity)-[:ACTION_TAKEN*]->(action) "
-            "return action"
-        ))
-        self.actions = [_ for _ in cursor]
-        return self.actions
-
-    def _is_first_action(self):
-        cursor = db.graph.run((
-            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->()-[:ACTION_TAKEN]->(action) "
-            "return action" % self.company_id
-        ))
-        return not cursor.forward()
-
-    def _add_first_action(self):
-        action = Action.create(self.company_id)
-        db.graph.push(action)
-        self.activity.action_taken.add(action)
-        self.activity.first_action.add(action)
-        self.activity.last_action.add(action)
-        db.graph.push(self.activity)
-        return action
-
-    def _get_and_move_last_action(self, new_action):
-
-        last_action = [_ for _ in self.activity.last_action][0]
-
-        last_action.action_taken.add(new_action)
-        self.activity.last_action.remove(last_action)
-        self.activity.last_action.add(new_action)
-
-        db.graph.push(self.activity)
-        db.graph.push(last_action)
-
-        return last_action
-
-    def _add_next_action(self):
-        new_action = Action.create(self.company_id)
-        db.graph.push(new_action)
-        last_action = self._get_and_move_last_action(new_action)
-        db.graph.push(last_action)
-        return new_action
-
-    def _new_action(self):
-        if self._is_first_action():
-            return self._add_first_action()
-        return self._add_next_action()
-
-    def new_action(self, step_number=None):
-        '''add a new action node optionally marking a step as completed'''
-        if step_number is not None:
-            action = self._new_action()
-            action.add_has_completed_rel(self.company_id, step_number)
-            return action 
-        return self._new_action()
-
-
-class UpdateBuildAction(object):
-    
     def __init__(self, company_id):
         self.company_id = company_id
         self.onboard = list(Client.select(db.graph).where(
@@ -550,6 +483,62 @@ class UpdateBuildAction(object):
         self._step_aware_mark_onboard_complete()
         return "recorded action for step %d and appropriately adjusted onboard activity" % step_number
 
+    def _update_actions(self):
+        cursor = db.graph.run((
+            "match (:Activity)-[:ACTION_TAKEN*]->(action) "
+            "return action"
+        ))
+        self.actions = [_ for _ in cursor]
+        return self.actions
+
+    def _is_first_action(self):
+        cursor = db.graph.run((
+            "match (:Client {company_id: '%s'})-[:HAS_ONBOARD]->()-[:HAS_ACTIVITY]->()-[:ACTION_TAKEN]->(action) "
+            "return action" % self.company_id
+        ))
+        return not cursor.forward()
+
+    def _add_first_action(self):
+        action = Action.create(self.company_id)
+        db.graph.push(action)
+        self.activity.action_taken.add(action)
+        self.activity.first_action.add(action)
+        self.activity.last_action.add(action)
+        db.graph.push(self.activity)
+        return action
+
+    def _get_and_move_last_action(self, new_action):
+
+        last_action = [_ for _ in self.activity.last_action][0]
+
+        last_action.action_taken.add(new_action)
+        self.activity.last_action.remove(last_action)
+        self.activity.last_action.add(new_action)
+
+        db.graph.push(self.activity)
+        db.graph.push(last_action)
+
+        return last_action
+
+    def _add_next_action(self):
+        new_action = Action.create(self.company_id)
+        db.graph.push(new_action)
+        last_action = self._get_and_move_last_action(new_action)
+        db.graph.push(last_action)
+        return new_action
+
+    def _new_action(self):
+        if self._is_first_action():
+            return self._add_first_action()
+        return self._add_next_action()
+
+    def new_action(self, step_number):
+        '''add a new action node optionally marking a step as completed'''
+        action = self._new_action()
+        action.add_has_completed_rel(self.company_id, step_number)
+        # self.aware_mark_step_complete(step_number)
+        return action 
+
 
 class UpdateClientOnboard(object):
     '''logic for updating the onboard node and structure in vicinity'''
@@ -559,74 +548,6 @@ class UpdateClientOnboard(object):
         self.onboard = list(Client.select(db.graph).where(
             company_id=company_id
         ).first().has_onboard)[0]
-
-    def num_dependencies(self, step_number):
-        cursor = db.graph.run((
-            "match (s:GenericStep)-[:DEPENDS_ON*]->(ds) "
-            "where s.step_number=%d "
-            "return count(ds) AS num_depends" % step_number
-        ))
-        return cursor.next()['num_depends']
-
-    def completed_dependencies(self, step_number):
-        cursor = db.graph.run((
-            "match (s:GenericStep)-[r:DEPENDS_ON*]->(ds) "
-            "match (ds)<-[:HAS_COMPLETED]-()<-[:HAS_ONBOARD]-(c) "
-            "where s.step_number=%d "
-            "AND c.company_id='%s' "
-            "return ds order by ds.step_number" % (step_number, self.company_id)
-        ))
-        return [result['ds']['step_number'] for result in cursor]
-
-    def depends_satisfied(self, step_number):
-        number_of_depends = self.num_dependencies(step_number)
-        completed_depends = self.completed_dependencies(step_number)
-        if number_of_depends == len(completed_depends):
-            return True
-        return False
-
-    def mark_onboard_complete(self):
-        a = arrow.utcnow()
-        self.onboard.completed = True
-        self.onboard.time_completed = a.timestamp
-        db.graph.push(self.onboard)
-        return 'onboard process marked complete'
-
-    def step_aware_mark_onboard_complete(self):
-        '''will mark the onboard process as complete if all the generic steps have been completed'''
-        if len(list(self.onboard.has_completed)) == len(GenericStep.all()):
-            self.mark_onboard_complete()
-        return 'onboard process not complete'
-
-    def mark_step_complete(self, step_number):
-        step = GenericStep.select(db.graph).where(
-            step_number=step_number
-        ).first()
-        self.onboard.has_completed.add(step)
-        db.graph.push(self.onboard)
-        return "marked step %d as complete" % step_number
-
-    def mark_step_invalid(self, step_number):
-        step = GenericStep.select(db.graph).where(
-            step_number=step_number
-        ).first()
-        self.onboard.invalid.add(step)
-        self.onboard.valid_onboard = False
-        db.graph.push(self.onboard)
-        return "marked step %d as invalid" % step_number
-
-    def dependency_aware_mark_step_complete(self, step_number):
-        if self.depends_satisfied(step_number):
-            self.mark_step_complete(step_number)
-            return "step marked as valid and complete"
-        self.mark_step_complete(step_number)
-        self.mark_step_invalid(step_number)
-        return "step marked as invalid and complete"
-
-    def aware_mark_step_complete(self, step_number):
-        self.dependency_aware_mark_step_complete(step_number)
-        self.step_aware_mark_onboard_complete()
-        return "recorded action for step %d and appropriately adjusted onboard activity" % step_number
 
     def submit_document(self, document_id):
         document = GenericDocument.select(db.graph).where(document_id=document_id).first()
